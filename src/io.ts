@@ -48,9 +48,7 @@ export async function* streamJsonl<T = unknown>(path: string): AsyncGenerator<{ 
       if (line.trim().length > 0) {
         try {
           yield { line: lineNumber, value: JSON.parse(line) as T }
-        } catch (error) {
-          console.error(`[streamJsonl] skipping unparseable line ${lineNumber} in ${path}: ${error instanceof Error ? error.message : String(error)}`)
-        }
+        } catch (_error) {}
       }
       lineNumber += 1
       newlineIndex = buffer.indexOf('\n')
@@ -61,9 +59,7 @@ export async function* streamJsonl<T = unknown>(path: string): AsyncGenerator<{ 
   if (buffer.trim().length > 0) {
     try {
       yield { line: lineNumber, value: JSON.parse(buffer) as T }
-    } catch (error) {
-      console.error(`[streamJsonl] skipping unparseable trailing line ${lineNumber} in ${path}: ${error instanceof Error ? error.message : String(error)}`)
-    }
+    } catch (_error) {}
   }
 }
 

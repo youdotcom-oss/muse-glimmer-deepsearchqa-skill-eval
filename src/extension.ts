@@ -119,7 +119,8 @@ export default async function youToolsExtension(pi: ExtensionAPI): Promise<void>
     if (toolCallCount >= MAX_TOOL_CALLS) {
       return {
         block: true,
-        reason: `Tool budget exhausted (${MAX_TOOL_CALLS}/${MAX_TOOL_CALLS}). ` +
+        reason:
+          `Tool budget exhausted (${MAX_TOOL_CALLS}/${MAX_TOOL_CALLS}). ` +
           'You have enough evidence to answer. Stop calling tools and write your final answer now.',
       }
     }
