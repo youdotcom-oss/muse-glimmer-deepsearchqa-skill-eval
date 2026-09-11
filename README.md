@@ -132,6 +132,8 @@ This requires `clickhouse-local` on `PATH` (set `CLICKHOUSE_LOCAL` if your binar
 | `JUDGE_TIMEOUT_MS` | grade | Per-judge-call timeout (default `180000`) |
 | `FORCE=1` | generate, grade | Discard prior artifacts for a clean rerun |
 | `RETRY_FAILED=1` | generate, grade | Regenerate only tasks whose latest K trials all failed, then re-grade them (used to re-run the provider-400 trials root-caused in `analysis/README.md` §6) |
+| `MAX_TOOL_CALLS` | generate | Extension tool-call budget cap (default `10`) |
+| `MAX_TOOL_RESULT_CHARS` | generate | Per-tool-result text cap before truncation (default `12000`) |
 | `MODELS_PATH` | generate | pi models.json path (default: repo `models.json`, which caps `meta/muse-glimmer-30b` `maxTokens` to 16384 so input + max_tokens stays under the provider's 131072 combined limit) |
 | `HF_DATASET_REPO` | upload, download | Target HF dataset repo |
 | `OPENROUTER_API_KEY` | generate | Model access |
@@ -157,9 +159,13 @@ The adapter loads the research Skill from `skills/you-web/SKILL.md`. It encodes 
 
 ## Tool budget enforcement
 
-The Skill text asks the model to stay within ~10 tool calls, but smaller or less instruction-following models ignore that ceiling and tail-chase (one trial ran 17+ `you-search` calls without converging to an answer). To make the budget binding for such models, `src/extension.ts` registers a `tool_call` hook that hard-caps total tool calls at 10 per trial: calls past the cap are blocked with a `Tool budget exhausted … write your final answer now` reason, which gives the model one more LLM turn to emit its answer instead of looping.
+The Skill text asks the model to stay within ~10 tool calls, but smaller or less instruction-following models ignore that ceiling and tail-chase. Enforcement lives in the extension (`src/extension.ts` + `src/budget-policy.ts`):
 
-Because the cap blocks calls (returning `status: 'failed'` in the trajectory), the harness's default `failOnFailedToolCalls` would penalize the cap's own blocked calls as process failures. `scripts/grade.ts` sets `failOnFailedToolCalls: false` on the `process` rubric so the cap's blocked calls are not counted against the process score; the budget is enforced at runtime by the extension, and the process rubric scores the run honestly (completed status, no error events) rather than re-litigating the cap. Stronger models that stay within the budget never trigger a block and are unaffected.
+- **Hard cap**: tool calls past `MAX_TOOL_CALLS` (default 10) are blocked with an answer-forcing reason that also forbids the candidate-set dump (list ONLY the items that satisfy every criterion — never the intermediate candidate set). Blocked calls return `status: 'failed'` in the trajectory, so the `process` rubric sets `failOnFailedToolCalls: false` — the budget is enforced at runtime by the extension, not re-litigated at grade time.
+- **Mid-budget check-in**: once, at the midpoint of the budget, the extension appends a hint to the tool result: how many calls remain, complete set enumerations before answering, and filter the final answer to only criterion-satisfying items.
+- **Per-result truncation**: each tool result's text is capped at `MAX_TOOL_RESULT_CHARS` (default 12000) with an omission marker, so accumulated tool content cannot push the model past its context window (the second-order overflow tier in the 2026-09-11 run: trials with 114k+ input tokens hit the 131072 provider window).
+
+Both knobs are env-configurable for A/B testing (e.g. `MAX_TOOL_CALLS=15`), and the analysis queries in `analysis/README.md` measure the failure-pattern buckets (fully incorrect / incomplete set / extraneous) these levers target.
 
 ## License
 

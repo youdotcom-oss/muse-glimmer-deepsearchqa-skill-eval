@@ -2,6 +2,7 @@
 import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { type CallToolResult, Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { type TSchema, Type } from 'typebox'
+import { createBudgetTracker, readMaxToolCalls, readMaxToolResultChars } from './budget-policy.ts'
 
 const MCP_URL = 'https://api.you.com/mcp?tools=you-search,you-contents'
 const CLIENT_INFO = { name: 'deepsearchqa-skill-eval', version: '0.0.0' } as const
@@ -107,26 +108,17 @@ function buildToolDefinition(tool: DiscoveredTool): ToolDefinition {
   }
 }
 
-/** Hard cap on total tool calls per trial; the skill text's budget is non-binding for weak models. */
-const MAX_TOOL_CALLS = 10
-
 export default async function youToolsExtension(pi: ExtensionAPI): Promise<void> {
   const tools = await discoverTools()
   for (const tool of tools) pi.registerTool(buildToolDefinition(tool))
 
-  let toolCallCount = 0
-  pi.on('tool_call', () => {
-    if (toolCallCount >= MAX_TOOL_CALLS) {
-      return {
-        block: true,
-        reason:
-          `Tool budget exhausted (${MAX_TOOL_CALLS}/${MAX_TOOL_CALLS}). ` +
-          'You have enough evidence to answer. Stop calling tools and write your final answer now.',
-      }
-    }
-    toolCallCount += 1
-    return undefined
-  })
+  // Budget policy: hard cap (MAX_TOOL_CALLS, default 10) with an answer-forcing
+  // block reason; one-time mid-budget check-in hint; per-result truncation
+  // (MAX_TOOL_RESULT_CHARS, default 12000) so accumulated tool content cannot
+  // push the model past its context window. See src/budget-policy.ts.
+  const tracker = createBudgetTracker(readMaxToolCalls(process.env), readMaxToolResultChars(process.env))
+  pi.on('tool_call', () => tracker.onToolCall())
+  pi.on('tool_result', (event) => tracker.onToolResult(event.content))
 
   pi.on('session_shutdown', () => {
     void closeSharedClient()
