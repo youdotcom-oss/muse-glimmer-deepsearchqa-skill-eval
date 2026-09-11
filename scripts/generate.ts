@@ -11,7 +11,7 @@ const TIMEOUT_MS = readIntegerEnv('TIMEOUT_MS', 600_000, 1)
 const MAX_OUTPUT_BYTES = readIntegerEnv('MAX_OUTPUT_BYTES', 50_000_000, 1)
 const MODEL = readStringEnv('MODEL')
 const PROVIDER = readStringEnv('PROVIDER', 'openrouter')
-const THINKING_LEVEL = readStringEnv('THINKING_LEVEL', 'medium')
+const THINKING_LEVEL = readStringEnv('THINKING_LEVEL', 'high')
 const TMP_TASKS_PATH = readStringEnv('TMP_GENERATE_TASKS_PATH', '.tmp/generate-tasks.jsonl')
 const TMP_OUTPUT_PATH = readStringEnv('TMP_GENERATE_OUTPUT_PATH', '.tmp/generate-output.jsonl')
 

@@ -11,11 +11,11 @@ import {
 const textOf = (b: ContentBlock): string => String(b.text ?? '')
 
 describe('readMaxToolCalls', () => {
-  test('reads MAX_TOOL_CALLS from env, defaults to 10, rejects invalid', () => {
-    expect(readMaxToolCalls({ MAX_TOOL_CALLS: '15' })).toBe(15)
-    expect(readMaxToolCalls({})).toBe(10)
-    expect(readMaxToolCalls({ MAX_TOOL_CALLS: 'zero' })).toBe(10)
-    expect(readMaxToolCalls({ MAX_TOOL_CALLS: '0' })).toBe(10)
+  test('reads MAX_TOOL_CALLS from env, defaults to 15, rejects invalid', () => {
+    expect(readMaxToolCalls({ MAX_TOOL_CALLS: '10' })).toBe(10)
+    expect(readMaxToolCalls({})).toBe(15)
+    expect(readMaxToolCalls({ MAX_TOOL_CALLS: 'zero' })).toBe(15)
+    expect(readMaxToolCalls({ MAX_TOOL_CALLS: '0' })).toBe(15)
   })
 })
 

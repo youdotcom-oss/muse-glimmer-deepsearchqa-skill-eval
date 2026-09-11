@@ -103,7 +103,10 @@ async function runAdapter(input: AdapterInput): Promise<object> {
 }
 
 function readThinkingLevel(value: unknown): ThinkingLevel {
-  return typeof value === 'string' && THINKING_LEVELS.has(value) ? (value as ThinkingLevel) : 'medium'
+  // Defaults to high: the A/B grid showed high thinking lifts avg F1 ~4pp on its
+  // own; generate.ts always passes THINKING_LEVEL (default high), so this
+  // fallback only fires when the config value is missing or invalid.
+  return typeof value === 'string' && THINKING_LEVELS.has(value) ? (value as ThinkingLevel) : 'high'
 }
 
 function createTrajectoryCollector(): { events: TrajectoryEvent[]; subscribe: (event: unknown) => void } {

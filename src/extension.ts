@@ -112,7 +112,7 @@ export default async function youToolsExtension(pi: ExtensionAPI): Promise<void>
   const tools = await discoverTools()
   for (const tool of tools) pi.registerTool(buildToolDefinition(tool))
 
-  // Budget policy: hard cap (MAX_TOOL_CALLS, default 10) with an answer-forcing
+  // Budget policy: hard cap (MAX_TOOL_CALLS, default 15) with an answer-forcing
   // block reason; one-time mid-budget check-in hint; per-result truncation
   // (MAX_TOOL_RESULT_CHARS, default 12000) so accumulated tool content cannot
   // push the model past its context window. See src/budget-policy.ts.

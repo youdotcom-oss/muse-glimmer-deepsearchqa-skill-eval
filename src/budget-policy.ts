@@ -23,7 +23,10 @@ export interface ContentBlock {
 
 export function readMaxToolCalls(env: Record<string, string | undefined>): number {
   const value = Number.parseInt(env.MAX_TOOL_CALLS ?? '', 10)
-  return Number.isFinite(value) && value >= 1 ? value : 10
+  // Default 15: the A/B grid (data/ab, 2026-09-11) showed the higher cap converts
+  // incomplete-set failures now that the maxTokens 400 and overflow tiers are
+  // fixed. Override with MAX_TOOL_CALLS=10 to reproduce the original cap.
+  return Number.isFinite(value) && value >= 1 ? value : 15
 }
 
 export function readMaxToolResultChars(env: Record<string, string | undefined>): number {
