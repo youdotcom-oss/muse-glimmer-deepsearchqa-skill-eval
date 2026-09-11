@@ -285,3 +285,79 @@ function row(
     ],
   }
 }
+
+describe('collectFinalError', () => {
+  test('returns the provider errorMessage from the final empty assistant turn', async () => {
+    const { collectFinalError } = await import('../src/pi-session.ts')
+    const session = {
+      messages: [
+        { role: 'assistant', content: [{ type: 'toolCall', name: 'you-search' }] },
+        {
+          role: 'assistant',
+          content: [],
+          stopReason: 'error',
+          errorMessage: "400: Requested token count exceeds the model's maximum context length of 131072 tokens.",
+        },
+      ],
+    }
+    const err = collectFinalError(session as unknown as Parameters<typeof collectFinalError>[0])
+    expect(err).not.toBeNull()
+    expect(err?.stopReason).toBe('error')
+    expect(err?.errorMessage).toContain('131072')
+  })
+
+  test('returns null when the final assistant turn has text content', async () => {
+    const { collectFinalError } = await import('../src/pi-session.ts')
+    const session = {
+      messages: [{ role: 'assistant', content: [{ type: 'text', text: 'New Zealand' }], stopReason: 'stop' }],
+    }
+    expect(collectFinalError(session as unknown as Parameters<typeof collectFinalError>[0])).toBeNull()
+  })
+})
+
+describe('collectAllFailedTaskIds', () => {
+  test('returns tasks whose latest k trials all failed, skips partial and completed', async () => {
+    const { collectAllFailedTaskIds } = await import('../src/trial-rows.ts')
+    const path = `${import.meta.dir}/../.tmp/test-retry-failed.jsonl`
+    const row = (taskId: string, trialIndex: number, status: string) =>
+      JSON.stringify({
+        taskId,
+        trialIndex,
+        trial: { result: { status } },
+      })
+    await Bun.write(
+      path,
+      [
+        row('all-failed', 0, 'failed'),
+        row('all-failed', 1, 'failed'),
+        row('all-failed', 2, 'failed'),
+        row('partial', 0, 'failed'),
+        row('partial', 1, 'completed'),
+        row('partial', 2, 'failed'),
+        row('succeeded', 0, 'completed'),
+        row('succeeded', 1, 'failed'),
+        row('succeeded', 2, 'completed'),
+      ].join('\n') + '\n',
+    )
+    const failed = await collectAllFailedTaskIds(path, 3)
+    expect(failed.has('all-failed')).toBe(true)
+    expect(failed.has('partial')).toBe(false)
+    expect(failed.has('succeeded')).toBe(false)
+  })
+
+  test('uses the latest row per key: a superseded failed trial does not count', async () => {
+    const { collectAllFailedTaskIds } = await import('../src/trial-rows.ts')
+    const path = `${import.meta.dir}/../.tmp/test-retry-failed.jsonl`
+    const row = (taskId: string, trialIndex: number, status: string) =>
+      JSON.stringify({ taskId, trialIndex, trial: { result: { status } } })
+    await Bun.write(
+      path,
+      [
+        row('retried', 0, 'failed'),
+        row('retried', 0, 'completed'), // superseding retry appended later
+      ].join('\n') + '\n',
+    )
+    const failed = await collectAllFailedTaskIds(path, 1)
+    expect(failed.has('retried')).toBe(false)
+  })
+})

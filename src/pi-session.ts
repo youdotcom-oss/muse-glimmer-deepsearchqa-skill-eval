@@ -6,7 +6,7 @@ import {
   SessionManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent'
-import { readIntegerEnv } from './env.ts'
+import { readIntegerEnv, readStringEnv } from './env.ts'
 
 interface CreatePiSessionOptions {
   model: string
@@ -47,7 +47,9 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
   const apiKey = process.env.OPENROUTER_API_KEY
   if (!apiKey) throw new Error('OPENROUTER_API_KEY is not set')
 
-  const modelRuntime = await ModelRuntime.create()
+  const modelRuntime = await ModelRuntime.create({
+    modelsPath: readStringEnv('MODELS_PATH', new URL('../models.json', import.meta.url).pathname),
+  })
   await modelRuntime.setRuntimeApiKey(options.provider, apiKey)
 
   const model = modelRuntime.getModel(options.provider, options.model)
@@ -87,6 +89,23 @@ export function collectFinalMessage(session: PiSessionResult['session']): string
   const msg = session.messages.at(-1)
   if (msg?.role !== 'assistant') return ''
   return messageContentText((msg as { content?: unknown }).content).trim()
+}
+
+/** When the final assistant turn is empty, surface the provider error (pi
+ * attaches `errorMessage` to the failed assistant message) so trial failures
+ * are diagnosable from the graded artifacts instead of requiring a repro. */
+export function collectFinalError(session: PiSessionResult['session']): {
+  stopReason: string | undefined
+  errorMessage: string | undefined
+} | null {
+  const msg = session.messages.at(-1)
+  if (msg?.role !== 'assistant') return null
+  if (messageContentText((msg as { content?: unknown }).content).trim().length > 0) return null
+  const record = msg as { stopReason?: unknown; errorMessage?: unknown }
+  return {
+    stopReason: typeof record.stopReason === 'string' ? record.stopReason : undefined,
+    errorMessage: typeof record.errorMessage === 'string' ? record.errorMessage : undefined,
+  }
 }
 
 export function summarizeUsage(messages: unknown[]): Record<string, number> {

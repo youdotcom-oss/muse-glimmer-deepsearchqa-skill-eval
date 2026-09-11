@@ -18,3 +18,7 @@ export function readIntegerEnv(name: string, fallback: number, min = 0): number 
 export function isForce(): boolean {
   return process.env.FORCE === '1' || process.env.FORCE === 'true'
 }
+
+export function isRetryFailed(): boolean {
+  return process.env.RETRY_FAILED === '1' || process.env.RETRY_FAILED === 'true'
+}

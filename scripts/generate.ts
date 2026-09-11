@@ -1,7 +1,7 @@
 import { dirname } from 'node:path'
-import { isForce, readIntegerEnv, readStringEnv } from '../src/env.ts'
+import { isForce, isRetryFailed, readIntegerEnv, readStringEnv } from '../src/env.ts'
 import { appendFileContents, ensureDir, readJsonl, removeIfExists, runCommandToFile, writeJsonl } from '../src/io.ts'
-import { collectTrialCounts } from '../src/trial-rows.ts'
+import { collectAllFailedTaskIds, collectTrialCounts } from '../src/trial-rows.ts'
 
 const PROMPTS_PATH = readStringEnv('PROMPTS_PATH', 'data/prompts.jsonl')
 const TRAJECTORIES_PATH = readStringEnv('TRAJECTORIES_PATH', 'data/trajectories.jsonl')
@@ -22,8 +22,19 @@ async function main(): Promise<void> {
   await ensureDir(dirname(TRAJECTORIES_PATH))
   await ensureDir(dirname(TMP_TASKS_PATH))
   const tasks = await readJsonl<Record<string, unknown>>(PROMPTS_PATH)
-  const counts = isForce() ? new Map<string, number>() : await collectTrialCounts(TRAJECTORIES_PATH)
-  const pendingTasks = tasks.filter((task) => (counts.get(String(task.id)) ?? 0) < K)
+  let pendingTasks: Record<string, unknown>[]
+  if (isRetryFailed()) {
+    // RETRY_FAILED=1: regenerate only tasks whose latest K trials all failed
+    // (e.g. the provider-400 trials root-caused in analysis/README.md §6),
+    // appending fresh trajectories alongside the old ones (latest row per key
+    // wins at read time).
+    const allFailed = await collectAllFailedTaskIds(TRAJECTORIES_PATH, K)
+    pendingTasks = tasks.filter((task) => allFailed.has(String(task.id)))
+    console.error(`RETRY_FAILED=1: regenerating ${pendingTasks.length} all-failed task(s)`)
+  } else {
+    const counts = isForce() ? new Map<string, number>() : await collectTrialCounts(TRAJECTORIES_PATH)
+    pendingTasks = tasks.filter((task) => (counts.get(String(task.id)) ?? 0) < K)
+  }
   if (pendingTasks.length === 0) {
     console.error(`No generation work left. ${TRAJECTORIES_PATH} already has K=${K} rows per task.`)
     return

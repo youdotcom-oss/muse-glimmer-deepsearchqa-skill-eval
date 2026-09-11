@@ -1,0 +1,11 @@
+{
+  "providers": {
+    "openrouter": {
+      "modelOverrides": {
+        "meta/muse-glimmer-30b": {
+          "maxTokens": 16384
+        }
+      }
+    }
+  }
+}

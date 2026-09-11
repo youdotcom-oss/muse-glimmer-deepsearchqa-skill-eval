@@ -160,3 +160,18 @@ describe('computeOverall', () => {
     expect(overall.reasoning).toBe('At least one required grader failed.')
   })
 })
+
+describe('models.json maxTokens override', () => {
+  test('ModelRuntime.create with the repo models.json caps muse-glimmer maxTokens', async () => {
+    const { ModelRuntime } = await import('@earendil-works/pi-coding-agent')
+    const runtime = await ModelRuntime.create({
+      modelsPath: new URL('../models.json', import.meta.url).pathname,
+    })
+    const model = runtime.getModel('openrouter', 'meta/muse-glimmer-30b')
+    expect(model).toBeDefined()
+    // The registry default is 117964 — the override must bring it to a value
+    // that leaves input+max_tokens well under the 131072 provider window.
+    expect(model?.maxTokens).toBe(16384)
+    expect(model?.contextWindow).toBe(131072)
+  })
+})

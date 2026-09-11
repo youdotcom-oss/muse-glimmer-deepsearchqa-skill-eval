@@ -1,5 +1,5 @@
 import { type JsonObject, readStdin, writeStdout } from './io.ts'
-import { collectFinalMessage, createPiSession, summarizeUsage } from './pi-session.ts'
+import { collectFinalError, collectFinalMessage, createPiSession, summarizeUsage } from './pi-session.ts'
 import { estimateYouApiUsage } from './you-cost.ts'
 
 interface AdapterInput {
@@ -50,11 +50,17 @@ async function runAdapter(input: AdapterInput): Promise<object> {
     await session.prompt(prompt)
     const message = collectFinalMessage(session)
     if (!message) {
+      // Surface the provider error (pi attaches errorMessage to the failed
+      // assistant turn) so future root-causing reads the graded row, not a repro.
+      const finalError = collectFinalError(session)
+      const failureMessage = finalError?.errorMessage
+        ? `No final assistant response generated. Last turn stopReason=${finalError.stopReason ?? 'unknown'}: ${finalError.errorMessage}`
+        : 'No final assistant response generated.'
       return {
         result: {
           status: 'failed',
-          message: 'No final assistant response generated.',
-          error: 'No final assistant response generated.',
+          message: failureMessage,
+          error: failureMessage,
           failureKind: 'harness_error',
         },
         trajectory: events,

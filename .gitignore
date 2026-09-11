@@ -14,3 +14,4 @@ data/summary.json
 
 # generated analysis output (run: bun run analysis)
 analysis/README.md
+models-store.json

@@ -46,6 +46,34 @@ export async function* streamLatestRows(path: string, latestLines: Map<string, n
   }
 }
 
+/** Task ids whose latest trial rows (per task+trialIndex key) number at least
+ * `k` and are ALL status=failed — the RETRY_FAILED regeneration set. Reads only
+ * the latest row per key so superseded retries don't count. */
+export async function collectAllFailedTaskIds(path: string, k: number): Promise<Set<string>> {
+  const latestLines = await collectLatestRowLines(path)
+  const trialsByTask = new Map<string, Array<string | undefined>>()
+  for await (const row of streamLatestRows(path, latestLines)) {
+    const taskId = typeof row.taskId === 'string' ? row.taskId : ''
+    const trialIndex = typeof row.trialIndex === 'number' ? row.trialIndex : undefined
+    if (!taskId || trialIndex === undefined) continue
+    const trials = trialsByTask.get(taskId) ?? []
+    trials[trialIndex] = asTrialStatus(row)
+    trialsByTask.set(taskId, trials)
+  }
+  const allFailed = new Set<string>()
+  for (const [taskId, trials] of trialsByTask) {
+    const statuses = trials.filter((status): status is string => status !== undefined)
+    if (statuses.length >= k && statuses.every((status) => status === 'failed')) allFailed.add(taskId)
+  }
+  return allFailed
+}
+
+function asTrialStatus(row: TrialJsonRow): string | undefined {
+  const trial = row.trial as { result?: { status?: unknown } } | undefined
+  const status = trial?.result?.status
+  return typeof status === 'string' ? status : undefined
+}
+
 export function* chunkRowsForHarness(rows: Iterable<TrialJsonRow>, maxBytes: number): Generator<TrialJsonRow[]> {
   let chunk: TrialJsonRow[] = []
   let chunkBytes = 0

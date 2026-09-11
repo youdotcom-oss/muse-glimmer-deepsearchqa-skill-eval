@@ -49,8 +49,8 @@ bun run upload
 
 ```sh
 bun run scaffold       # DeepSearchQA -> data/prompts.jsonl
-bun run generate       # prompts.jsonl -> trajectories.jsonl
-bun run grade          # trajectories.jsonl -> graded.jsonl + summary.json
+bun run generate       # prompts.jsonl -> trajectories.jsonl (RETRY_FAILED=1 regenerates all-failed tasks)
+bun run grade          # trajectories.jsonl -> graded.jsonl + summary.json (RETRY_FAILED=1 re-grades them)
 bun run eval           # scaffold + generate + grade
 bun run export-results # graded.jsonl -> results.jsonl
 bun run download       # download published artifacts from HF into data/
@@ -132,6 +132,8 @@ This requires `clickhouse-local` on `PATH` (set `CLICKHOUSE_LOCAL` if your binar
 | `JUDGE_FALLBACK_MODEL` | grade | Judge used if the primary judge call fails (default `qwen/qwen3.6-flash`) |
 | `JUDGE_TIMEOUT_MS` | grade | Per-judge-call timeout (default `180000`) |
 | `FORCE=1` | generate, grade | Discard prior artifacts for a clean rerun |
+| `RETRY_FAILED=1` | generate, grade | Regenerate only tasks whose latest K trials all failed, then re-grade them (used to re-run the provider-400 trials root-caused in `analysis/README.md` §6) |
+| `MODELS_PATH` | generate | pi models.json path (default: repo `models.json`, which caps `meta/muse-glimmer-30b` `maxTokens` to 16384 so input + max_tokens stays under the provider's 131072 combined limit) |
 | `HF_DATASET_REPO` | upload, download | Target HF dataset repo |
 | `OPENROUTER_API_KEY` | generate | Model access |
 | `YDC_API_KEY` | generate | You.com API access |
