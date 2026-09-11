@@ -1,0 +1,15 @@
+node_modules/
+.tmp/
+.ruff_cache/
+.venv/
+__pycache__/
+/clickhouse
+data/prompts.jsonl
+data/results.jsonl
+data/trajectories.jsonl
+data/graded.jsonl
+data/summary.json
+.DS_Store
+
+# generated analysis output (run: bun run analysis)
+analysis/README.md
