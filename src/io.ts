@@ -45,14 +45,26 @@ export async function* streamJsonl<T = unknown>(path: string): AsyncGenerator<{ 
     while (newlineIndex !== -1) {
       const line = buffer.slice(0, newlineIndex)
       buffer = buffer.slice(newlineIndex + 1)
-      if (line.trim().length > 0) yield { line: lineNumber, value: JSON.parse(line) as T }
+      if (line.trim().length > 0) {
+        try {
+          yield { line: lineNumber, value: JSON.parse(line) as T }
+        } catch (error) {
+          console.error(`[streamJsonl] skipping unparseable line ${lineNumber} in ${path}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
       lineNumber += 1
       newlineIndex = buffer.indexOf('\n')
     }
   }
 
   buffer += decoder.decode()
-  if (buffer.trim().length > 0) yield { line: lineNumber, value: JSON.parse(buffer) as T }
+  if (buffer.trim().length > 0) {
+    try {
+      yield { line: lineNumber, value: JSON.parse(buffer) as T }
+    } catch (error) {
+      console.error(`[streamJsonl] skipping unparseable trailing line ${lineNumber} in ${path}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
 }
 
 export async function writeJsonl(path: string, rows: unknown[]): Promise<void> {
