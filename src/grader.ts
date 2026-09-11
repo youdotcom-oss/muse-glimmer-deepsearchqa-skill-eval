@@ -76,10 +76,32 @@ export async function gradeFromInput(input: GraderInput): Promise<object> {
   let judged: NormalizedJudgeResult
   try {
     judged = await judgeWithModel(model, user, timeoutMs)
-  } catch (error) {
-    fallbackReason = error instanceof Error ? error.message : String(error)
+  } catch (primaryError) {
+    fallbackReason = primaryError instanceof Error ? primaryError.message : String(primaryError)
     usedModel = fallbackModel
-    judged = await judgeWithModel(fallbackModel, user, timeoutMs)
+    try {
+      judged = await judgeWithModel(fallbackModel, user, timeoutMs)
+    } catch (fallbackError) {
+      // Both judges failed (malformed JSON / no Correctness Details / network).
+      // Record the row as scored-0 rather than crashing the whole grade run.
+      const fbMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+      return {
+        pass: false,
+        score: 0,
+        reasoning: `Judge failed for both primary and fallback models: ${fallbackReason}; ${fbMessage}`,
+        outcome: {
+          gradable: true,
+          model: fallbackModel,
+          fallbackFrom: model,
+          fallbackReason: `${fallbackReason}; ${fbMessage}`,
+          correctCount: 0,
+          expectedCount: 0,
+          excessiveCount: 0,
+          correctnessDetails: [],
+          excessiveAnswers: [],
+        },
+      }
+    }
   }
 
   const answerScore = scoreJudgeResult(judged)
