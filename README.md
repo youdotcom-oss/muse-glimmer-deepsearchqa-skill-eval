@@ -62,36 +62,35 @@ bun run check          # typecheck + tests
 
 ## Results
 
-### Full run — 2026-09-11
+### Full run — 2026-09-11 (after maxTokens fix + failed-trial retry)
 
 | | |
 | --- | --- |
 | Model | `meta/muse-glimmer-30b` (OpenRouter) |
 | Thinking level | `medium` |
 | Trials / tasks | 2700 trials / 900 tasks (K=3) |
-| Average answer F1 (raw) | **0.4262** |
-| Average answer F1 (adjusted, 2688 gradable trials) | 0.4281 |
-| Trial pass rate (score >= 0.8) | 37.0% |
-| `exactPassAtK` (task-level, any trial >= 0.8) | **53.22%** |
+| Average answer F1 (raw) | **0.5341** |
+| Average answer F1 (adjusted, 2688 gradable trials) | 0.5365 |
+| Trial pass rate (score >= 0.8) | 46.44% |
+| `exactPassAtK` (task-level, any trial >= 0.8) | **66.78%** (601/900) |
+| Trial statuses | 2096 completed (77.6%) / 604 failed (22.2%) |
 | Ungradable trials | 12 |
 
 Cost and process (from `data/summary.json`):
 
 | Metric | Value |
 | --- | --- |
-| Model cost | $88.33 |
-| You.com API cost | $110.12 |
-| Total cost | $198.45 |
-| Avg total cost / trial | $0.0735 |
-| Input tokens | 217.8M |
-| Output tokens | 7.4M |
-| Avg tool-call events / trial | 18.05 (incl. started+completed events per call) |
-| Failed tool-call events (budget-cap blocks) | 2463 |
+| Model cost | $104.03 |
+| You.com API cost | $117.55 |
+| Total cost | $221.58 |
+| Input tokens | 254.4M |
+| Output tokens | 8.6M |
+| Avg tool-call events / trial | 19.3 (incl. started+completed events per call) |
+| Failed tool-call events (budget-cap blocks) | 3068 |
 | Error events | 0 |
-| Avg end-to-end latency / trial | 88.5s |
-| Trial statuses | 1695 completed / 1005 failed |
+| Avg end-to-end latency / trial | 108.3s |
 
-Interpretation (observations for this run of this model, not cross-model conclusions): the extension-enforced 10-call budget held — trials averaged well under the skill ceiling in real calls, with blocked-call retries (`failed` tool-call events) averaging under one per trial, and zero error events across all 2700 trials. The dominant performance limiter was not the model or the budget: 1006 trials (37.3%) died on a deterministic provider 400 — pi requests a near-full-window `max_tokens` (registry `maxTokens: 117964` against a 131072 window) and the provider counts ~1k more input tokens than pi estimates, so the request is rejected outright (see `analysis/README.md` §6 for the evidence chain and repro). On completed trials alone the model scores F1 0.708 with a 58.9% pass rate and 68.1% pass@K — the headline 0.426 mostly measures that harness/registry mismatch, not answer quality.
+Run history: the first full grade (before the `models.json` maxTokens fix) scored F1 0.4262 / pass@K 53.22% with 37.3% of trials dying on a deterministic provider 400 (pi requested a near-full-window `max_tokens` against the registry `maxTokens: 117964`; see `analysis/README.md` §6 for the evidence chain). After committing the `models.json` override (`maxTokens: 16384`) and regenerating the 197 all-failed tasks (`RETRY_FAILED=1`), trial completion rose from 62.8% to 77.6% and the headline moved to F1 0.5341 / pass@K 66.78%. Observations for this model, not cross-model conclusions: of the 604 still-failed trials, ~190 are a genuine second-order overflow (trials that accumulated 114k+ input tokens of unbounded tool results and hit the true 131072 window — surfaced by the adapter's errorMessage capture), and ~414 are stale pre-fix failures on tasks with at least one completed trial. Among completed trials the answer-quality failure patterns are: fully incorrect 424 (final-step reasoning), incomplete set enumeration 278, and correct-but-extraneous 131 (candidate-set dump; the model has every correct answer but lists extras).
 
 For reference, the DeepSearchQA paper's Table 4 reports GPT-5 High Reasoning at 73.24 F1, Gemini 3 Pro Preview at 76.86 F1, GPT-5 Pro High Reasoning at 78.98 F1, and Gemini Deep Research Agent at 81.90 F1.
 
