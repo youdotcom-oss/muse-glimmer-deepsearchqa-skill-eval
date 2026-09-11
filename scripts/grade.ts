@@ -49,7 +49,12 @@ async function main(): Promise<void> {
       trialsPath: TMP_TRIALS_PATH,
       concurrency: CONCURRENCY,
       graders: [
-        { id: 'process', type: 'process', weight: 0.1 },
+        {
+          id: 'process',
+          type: 'process',
+          weight: 0.1,
+          options: { failOnFailedToolCalls: false },
+        },
         {
           id: 'deepsearchqa-answer',
           type: 'command',

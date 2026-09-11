@@ -1,10 +1,8 @@
-import { getModel } from '@earendil-works/pi-ai'
 import {
-  AuthStorage,
+  ModelRuntime,
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
-  ModelRegistry,
   SessionManager,
   SettingsManager,
 } from '@earendil-works/pi-coding-agent'
@@ -49,11 +47,10 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
   const apiKey = process.env.OPENROUTER_API_KEY
   if (!apiKey) throw new Error('OPENROUTER_API_KEY is not set')
 
-  const authStorage = AuthStorage.create()
-  authStorage.setRuntimeApiKey(options.provider, apiKey)
+  const modelRuntime = await ModelRuntime.create()
+  await modelRuntime.setRuntimeApiKey(options.provider, apiKey)
 
-  const modelRegistry = ModelRegistry.create(authStorage)
-  const model = getModel(options.provider as never, options.model)
+  const model = modelRuntime.getModel(options.provider, options.model)
   if (!model) throw new Error(`Model ${options.provider}/${options.model} not found in pi registry`)
 
   const settingsManager = createPiSettingsManager()
@@ -76,8 +73,7 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
     cwd: options.cwd ?? process.cwd(),
     model,
     thinkingLevel: options.thinkingLevel,
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     resourceLoader: loader,
     tools: options.tools,
     sessionManager: SessionManager.inMemory(),

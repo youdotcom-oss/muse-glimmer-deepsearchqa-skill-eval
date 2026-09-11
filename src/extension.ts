@@ -107,9 +107,26 @@ function buildToolDefinition(tool: DiscoveredTool): ToolDefinition {
   }
 }
 
+/** Hard cap on total tool calls per trial; the skill text's budget is non-binding for weak models. */
+const MAX_TOOL_CALLS = 10
+
 export default async function youToolsExtension(pi: ExtensionAPI): Promise<void> {
   const tools = await discoverTools()
   for (const tool of tools) pi.registerTool(buildToolDefinition(tool))
+
+  let toolCallCount = 0
+  pi.on('tool_call', () => {
+    if (toolCallCount >= MAX_TOOL_CALLS) {
+      return {
+        block: true,
+        reason: `Tool budget exhausted (${MAX_TOOL_CALLS}/${MAX_TOOL_CALLS}). ` +
+          'You have enough evidence to answer. Stop calling tools and write your final answer now.',
+      }
+    }
+    toolCallCount += 1
+    return undefined
+  })
+
   pi.on('session_shutdown', () => {
     void closeSharedClient()
   })

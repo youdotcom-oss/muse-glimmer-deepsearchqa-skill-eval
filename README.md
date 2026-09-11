@@ -125,6 +125,12 @@ bun run upload -- --files results.jsonl,summary.json,README.md
 
 The adapter loads the research Skill from `skills/you-web/SKILL.md`. It encodes a focused workflow for the `you-search` and `you-contents` MCP tools. Tune it per model as needed; keep authentication in local environment or local MCP configuration, and do not commit API keys, customer data, or private evaluation cases.
 
+## Tool budget enforcement
+
+The Skill text asks the model to stay within ~10 tool calls, but smaller or less instruction-following models ignore that ceiling and tail-chase (one trial ran 17+ `you-search` calls without converging to an answer). To make the budget binding for such models, `src/extension.ts` registers a `tool_call` hook that hard-caps total tool calls at 10 per trial: calls past the cap are blocked with a `Tool budget exhausted … write your final answer now` reason, which gives the model one more LLM turn to emit its answer instead of looping.
+
+Because the cap blocks calls (returning `status: 'failed'` in the trajectory), the harness's default `failOnFailedToolCalls` would penalize the cap's own blocked calls as process failures. `scripts/grade.ts` sets `failOnFailedToolCalls: false` on the `process` rubric so the cap's blocked calls are not counted against the process score; the budget is enforced at runtime by the extension, and the process rubric scores the run honestly (completed status, no error events) rather than re-litigating the cap. Stronger models that stay within the budget never trigger a block and are unaffected.
+
 ## License
 
 MIT.
