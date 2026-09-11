@@ -228,13 +228,16 @@ export interface GradeWithClickhouseOptions {
   clickhouseCommand: string
   /** e.g. ["bun", "run", "src/grader.ts"] */
   answerGraderCommand: string[]
-  answerGraderModel: string
   processOptions: ProcessOptions
   k: number
   model: string
   /** Skip the LLM judge (mark answer rubric skipped); used when no API key. */
   skipAnswerGrader?: boolean
   concurrency?: number
+  /** Trial keys (taskId\ttrialIndex) already graded; skip those rows. */
+  gradedKeys?: Set<string>
+  /** Append to gradedPath instead of truncating (resume mode). */
+  append?: boolean
 }
 
 /**
@@ -242,27 +245,12 @@ export interface GradeWithClickhouseOptions {
  * ~25MB serialized row (which truncates and kills the harness on huge trials).
  *
  * Flow:
- * 1. clickhouse-local reads trajectories.jsonl directly (file, no stdio) and
- *    emits one row per trial with the process summary fields computed.
+ * 1. streamJsonl reads trajectories.jsonl in chunks (no single 25MB read or
+ *    write) — replaces the harness subprocess whose single process.stdout.write
+ *    of a ~25MB serialized graded row truncated and killed it on huge trials.
  * 2. For each row, run the answer grader subprocess (src/grader.ts) fed the
  *    minimal projection (task + result.message) — never the 16MB trajectory.
- * 3. Compute overall pass/score/reasoning, write graded.jsonl.
- * 4. Reuse writeSummaryFromJsonl for summary.json.
- */
-
-/**
- * Grades trajectories.jsonl without the harness's single stdout write of a
- * ~25MB serialized row (which truncates and kills the harness on huge trials).
- *
- * Flow:
- * 1. clickhouse-local reads trajectories.jsonl directly (file, no stdio) and
- *    re-emits each trial row as one JSON line — clickhouse reads the file, so
- *    there is no single stdout write of a 25MB string to break.
- * 2. For each row, compute the process summary in JS (parity with the harness
- *    is easier to keep than re-expressing every counter in SQL) and run the
- *    answer grader subprocess (src/grader.ts) fed the minimal projection
- *    (task + result.message) — never the 16MB trajectory.
- * 3. Compute overall pass/score/reasoning, write graded.jsonl.
+ * 3. Compute overall pass/score/reasoning, write graded.jsonl via a stream.
  * 4. Reuse writeSummaryFromJsonl for summary.json.
  */
 export async function gradeWithClickhouse(
@@ -270,45 +258,30 @@ export async function gradeWithClickhouse(
 ): Promise<import('./summary.ts').Summary> {
   const { createWriteStream } = await import('node:fs')
   const { once } = await import('node:events')
-  const { ensureDir } = await import('./io.ts')
+  const { ensureDir, streamJsonl } = await import('./io.ts')
   const { writeSummaryFromJsonl } = await import('./summary.ts')
   const { dirname } = await import('node:path')
+  const { trialRowKey } = await import('./trial-rows.ts')
 
   await ensureDir(dirname(options.gradedPath))
-  const writer = createWriteStream(options.gradedPath, { flags: 'w' })
+  const writer = createWriteStream(options.gradedPath, { flags: options.append ? 'a' : 'w' })
   const writeRow = (line: string): void => {
     if (!writer.write(`${line}\n`)) void once(writer, 'drain')
   }
 
-  // clickhouse reads the file directly and emits each trial row as one JSON
-  // line. This is the key difference from the harness: no single
-  // process.stdout.write of a ~25MB serialized string.
-  const chQuery = `SELECT json FROM file('${options.trajectoriesPath.replace(/'/g, "''")}', 'JSONAsString', 'json String') FORMAT JSONEachRow`
-  const cmdParts = [...options.clickhouseCommand.trim().split(/\s+/), '--query', chQuery]
-  const ch = Bun.spawn({ cmd: cmdParts, stdout: 'pipe', stderr: 'inherit' })
-
-  const decoder = new TextDecoder()
-  let buffer = ''
+  // Read trajectories via streamJsonl (streams the file in chunks — no single
+  // 25MB read or write). This replaces the harness's subprocess, whose single
+  // process.stdout.write of a ~25MB serialized graded row truncated and killed
+  // it on huge trials. The process rubric is computed in JS (parity with the
+  // harness via gradeProcess); the answer rubric runs as a subprocess fed only
+  // the minimal projection.
+  const gradedKeys = options.gradedKeys ?? new Set<string>()
   const rows: TrialRow[] = []
-  for await (const chunk of ch.stdout) {
-    buffer += decoder.decode(chunk, { stream: true })
-    let ni = buffer.indexOf('\n')
-    while (ni !== -1) {
-      const line = buffer.slice(0, ni)
-      buffer = buffer.slice(ni + 1)
-      if (line.trim()) {
-        try {
-          // clickhouse emits {"json":"<full row json string>"} in JSONEachRow;
-          // the full row is the JSON-encoded string value of that field.
-          const envelope = JSON.parse(line) as { json: string }
-          rows.push(JSON.parse(envelope.json) as TrialRow)
-        } catch (_e) {}
-      }
-      ni = buffer.indexOf('\n')
-    }
+  for await (const { value } of streamJsonl<TrialRow>(options.trajectoriesPath)) {
+    const key = trialRowKey(value as unknown as Record<string, unknown>)
+    if (key && gradedKeys.has(key)) continue
+    rows.push(value)
   }
-  const exitCode = await ch.exited
-  if (exitCode !== 0) throw new Error(`clickhouse exited with code ${exitCode}`)
 
   const concurrency = options.concurrency ?? 8
   let index = 0

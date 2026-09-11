@@ -9,7 +9,6 @@ const GRADED = join(TMP, 'graded.jsonl')
 const SUMMARY = join(TMP, 'summary.json')
 const CLICKHOUSE = join(import.meta.dir, '..', 'clickhouse') + ' local'
 const GRADER_CMD = ['bun', 'run', 'src/grader.ts']
-const JUDGE_MODEL = 'qwen/qwen3.6-flash'
 
 // Two synthetic trial rows: one completed-with-answer, one failed.
 // Keep them tiny so clickhouse reads them instantly. The shape matches the
@@ -85,7 +84,6 @@ describe('gradeWithClickhouse (integration)', () => {
       summaryPath: SUMMARY,
       clickhouseCommand: CLICKHOUSE,
       answerGraderCommand: GRADER_CMD,
-      answerGraderModel: JUDGE_MODEL,
       processOptions: { id: 'process', weight: 0.1, failOnFailedToolCalls: false },
       k: 1,
       model: 'test-model',
@@ -114,4 +112,41 @@ describe('gradeWithClickhouse (integration)', () => {
   test('cleans up', () => {
     rmSync(TMP, { recursive: true, force: true })
   })
+})
+
+describe('gradeWithClickhouse (resumability)', () => {
+  test('skips rows whose key is in gradedKeys and appends to graded.jsonl', async () => {
+    mkdirSync(TMP, { recursive: true })
+    writeFileSync(TRAJECTORIES, [COMPLETED_ROW, FAILED_ROW].map((r) => JSON.stringify(r)).join('\n') + '\n')
+    // Pretend the completed trial is already graded.
+    const gradedKey = `${COMPLETED_ROW.taskId}\t${COMPLETED_ROW.trialIndex}`
+    // Seed graded.jsonl with a placeholder row so we can confirm append (not truncate).
+    const placeholder = { ...COMPLETED_ROW, pass: true, score: 1, reasoning: 'pre-existing' }
+    writeFileSync(GRADED, JSON.stringify(placeholder) + '\n')
+
+    const summary = await gradeWithClickhouse({
+      trajectoriesPath: TRAJECTORIES,
+      gradedPath: GRADED,
+      summaryPath: SUMMARY,
+      clickhouseCommand: CLICKHOUSE,
+      answerGraderCommand: GRADER_CMD,
+      processOptions: { id: 'process', weight: 0.1, failOnFailedToolCalls: false },
+      k: 1,
+      model: 'test-model',
+      skipAnswerGrader: !process.env.OPENROUTER_API_KEY,
+      gradedKeys: new Set([gradedKey]),
+      append: true,
+    })
+
+    // Only the failed trial (deepsearchqa-1) was graded this run; the completed
+    // one was skipped because its key was in gradedKeys. The summary reads the
+    // whole graded.jsonl (placeholder + newly graded = 2 rows).
+    expect(summary.raw.trialCount).toBe(2)
+    expect(summary.raw.taskCount).toBe(2)
+    const rows = (await Bun.file(GRADED).text()).trim().split('\n').filter(Boolean)
+    // The placeholder survived (append, not truncate).
+    expect(rows.length).toBe(2)
+    expect(JSON.parse(rows[0] ?? '').reasoning).toBe('pre-existing')
+    rmSync(TMP, { recursive: true, force: true })
+  }, 30_000)
 })
