@@ -361,3 +361,32 @@ describe('collectAllFailedTaskIds', () => {
     expect(failed.has('retried')).toBe(false)
   })
 })
+
+describe('pruneFailedGradedRows', () => {
+  test('removes failed graded rows, keeps completed ones', async () => {
+    const { pruneFailedGradedRows } = await import('../src/trial-rows.ts')
+    const path = `${import.meta.dir}/../.tmp/test-prune-failed.jsonl`
+    const row = (taskId: string, status: string) =>
+      JSON.stringify({ taskId, trialIndex: 0, trial: { result: { status } } })
+    await Bun.write(
+      path,
+      [row('failed-1', 'failed'), row('kept-1', 'completed'), row('failed-2', 'failed')].join('\n') + '\n',
+    )
+    const pruned = await pruneFailedGradedRows(path)
+    expect(pruned).toBe(2)
+    const lines = (await Bun.file(path).text()).trim().split('\n')
+    expect(lines.length).toBe(1)
+    expect(JSON.parse(lines[0] ?? '').taskId).toBe('kept-1')
+  })
+
+  test('is a no-op when there is nothing to prune', async () => {
+    const { pruneFailedGradedRows } = await import('../src/trial-rows.ts')
+    const path = `${import.meta.dir}/../.tmp/test-prune-failed.jsonl`
+    const row = (taskId: string, status: string) =>
+      JSON.stringify({ taskId, trialIndex: 0, trial: { result: { status } } })
+    await Bun.write(path, [row('kept-1', 'completed')].join('\n') + '\n')
+    expect(await pruneFailedGradedRows(path)).toBe(0)
+    const lines = (await Bun.file(path).text()).trim().split('\n')
+    expect(lines.length).toBe(1)
+  })
+})

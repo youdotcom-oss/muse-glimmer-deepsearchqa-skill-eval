@@ -1,3 +1,6 @@
+import { once } from 'node:events'
+import { createWriteStream, existsSync } from 'node:fs'
+import { rename, rm } from 'node:fs/promises'
 import { streamJsonl } from './io.ts'
 
 export type TrialJsonRow = Record<string, unknown>
@@ -72,6 +75,33 @@ function asTrialStatus(row: TrialJsonRow): string | undefined {
   const trial = row.trial as { result?: { status?: unknown } } | undefined
   const status = trial?.result?.status
   return typeof status === 'string' ? status : undefined
+}
+
+/** Streaming rewrite of a graded JSONL file excluding rows whose trial status
+ * is failed. Failed rows score 0 and re-grade for free (the answer judge skips
+ * non-completed trials), so pruning them is the RETRY_FAILED re-grade set:
+ * every regenerated trial (whose key was previously failed) becomes pending.
+ * Atomic via temp file + rename. Returns the number of pruned rows. */
+export async function pruneFailedGradedRows(path: string): Promise<number> {
+  if (!existsSync(path)) return 0
+  const tmpPath = `${path}.prune-tmp`
+  const writer = createWriteStream(tmpPath)
+  let pruned = 0
+  for await (const { value } of streamJsonl<TrialJsonRow>(path)) {
+    if (asTrialStatus(value) === 'failed') {
+      pruned += 1
+      continue
+    }
+    if (!writer.write(`${JSON.stringify(value)}\n`)) await once(writer, 'drain')
+  }
+  writer.end()
+  await once(writer, 'finish')
+  if (pruned === 0) {
+    await rm(tmpPath, { force: true })
+    return 0
+  }
+  await rename(tmpPath, path)
+  return pruned
 }
 
 export function* chunkRowsForHarness(rows: Iterable<TrialJsonRow>, maxBytes: number): Generator<TrialJsonRow[]> {

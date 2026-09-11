@@ -150,3 +150,49 @@ describe('gradeWithClickhouse (resumability)', () => {
     rmSync(TMP, { recursive: true, force: true })
   }, 30_000)
 })
+
+describe('gradeWithClickhouse (latest-row skip)', () => {
+  test('grades only the latest row per key when latestLines is provided', async () => {
+    const oldRow = JSON.stringify({
+      ...COMPLETED_ROW,
+      taskId: 'deepsearchqa-9',
+      trialId: 'old',
+      trial: {
+        ...COMPLETED_ROW.trial,
+        id: 'old',
+        result: { status: 'failed', message: '', error: 'x', failureKind: 'harness_error' },
+      },
+    })
+    const newRow = JSON.stringify({
+      ...COMPLETED_ROW,
+      taskId: 'deepsearchqa-9',
+      trialId: 'new',
+      trial: {
+        ...COMPLETED_ROW.trial,
+        id: 'new',
+        result: { status: 'failed', message: '', error: 'y', failureKind: 'harness_error' },
+      },
+    })
+    mkdirSync(TMP, { recursive: true })
+    writeFileSync(TRAJECTORIES, `${oldRow}\n${newRow}\n`)
+    // Only line 2 (the new row) is latest for key deepsearchqa-9\t0.
+    const latestLines = new Map([['deepsearchqa-9\t0', 2]])
+    const summary = await gradeWithClickhouse({
+      trajectoriesPath: TRAJECTORIES,
+      gradedPath: GRADED,
+      summaryPath: SUMMARY,
+      clickhouseCommand: CLICKHOUSE,
+      answerGraderCommand: GRADER_CMD,
+      processOptions: { id: 'process', weight: 0.1, failOnFailedToolCalls: false },
+      k: 1,
+      model: 'test-model',
+      skipAnswerGrader: true,
+      latestLines,
+    })
+    expect(summary.raw.trialCount).toBe(1)
+    const rows = (await Bun.file(GRADED).text()).trim().split('\n').filter(Boolean)
+    expect(rows.length).toBe(1)
+    expect(JSON.parse(rows[0] ?? '').trialId).toBe('new')
+    rmSync(TMP, { recursive: true, force: true })
+  }, 30_000)
+})

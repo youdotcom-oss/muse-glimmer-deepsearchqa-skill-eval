@@ -236,6 +236,10 @@ export interface GradeWithClickhouseOptions {
   concurrency?: number
   /** Trial keys (taskId\ttrialIndex) already graded; skip those rows. */
   gradedKeys?: Set<string>
+  /** Latest trajectory line per trial key (from collectLatestRowLines). When
+   * provided, superseded rows (an older line for the same key) are skipped so
+   * regenerated trials replace their predecessors exactly once. */
+  latestLines?: Map<string, number>
   /** Append to gradedPath instead of truncating (resume mode). */
   append?: boolean
 }
@@ -290,8 +294,11 @@ export async function gradeWithClickhouse(
   // the minimal projection.
   const gradedKeys = options.gradedKeys ?? new Set<string>()
   const rows: TrialRow[] = []
-  for await (const { value } of streamJsonl<TrialRow>(options.trajectoriesPath)) {
+  for await (const { line, value } of streamJsonl<TrialRow>(options.trajectoriesPath)) {
     const key = trialRowKey(value as unknown as Record<string, unknown>)
+    // Skip superseded rows: a regenerated trial appended later supersedes the
+    // old one for the same key; only the latest line is ever graded.
+    if (key && options.latestLines !== undefined && options.latestLines.get(key) !== line) continue
     if (key && gradedKeys.has(key)) continue
     rows.push(value)
   }
