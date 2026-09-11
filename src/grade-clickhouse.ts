@@ -265,8 +265,21 @@ export async function gradeWithClickhouse(
 
   await ensureDir(dirname(options.gradedPath))
   const writer = createWriteStream(options.gradedPath, { flags: options.append ? 'a' : 'w' })
-  const writeRow = (line: string): void => {
-    if (!writer.write(`${line}\n`)) void once(writer, 'drain')
+  // Serialize writes: concurrent workers compute grades in parallel (the
+  // expensive LLM-judge part) but write graded rows one at a time so only one
+  // drain listener is ever pending. Without this, 24 workers each add a
+  // once('drain') listener on backpressure, exceeding the default limit and
+  // leaking.
+  let writeQueue: Promise<void> = Promise.resolve()
+  const writeRow = (line: string): Promise<void> => {
+    writeQueue = writeQueue.then(
+      () =>
+        new Promise<void>((resolve) => {
+          if (writer.write(`${line}\n`)) resolve()
+          else writer.once('drain', () => resolve())
+        }),
+    )
+    return writeQueue
   }
 
   // Read trajectories via streamJsonl (streams the file in chunks — no single
@@ -310,7 +323,7 @@ export async function gradeWithClickhouse(
       }
       const overall = computeOverall({ ...row, graderResults })
       const graded = { ...row, process: row.process ?? computeProcessSummary(row.trial), graderResults, ...overall }
-      writeRow(JSON.stringify(graded))
+      await writeRow(JSON.stringify(graded))
     }
   })
   await Promise.all(workers)
