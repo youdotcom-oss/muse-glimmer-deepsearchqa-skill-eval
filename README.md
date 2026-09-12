@@ -63,35 +63,45 @@ bun run check          # typecheck + tests
 
 ## Results
 
-### Full run — 2026-09-11 (after maxTokens fix + failed-trial retry)
+### Full run — 2026-09-12 (cap15 + high thinking + truncation; current defaults)
 
 | | |
 | --- | --- |
 | Model | `meta/muse-glimmer-30b` (OpenRouter) |
-| Thinking level | `medium` |
+| Thinking level | `high` |
+| Tool budget | 15 calls (`MAX_TOOL_CALLS=15`), results truncated at 12k chars |
 | Trials / tasks | 2700 trials / 900 tasks (K=3) |
-| Average answer F1 (raw) | **0.5341** |
-| Average answer F1 (adjusted, 2688 gradable trials) | 0.5365 |
-| Trial pass rate (score >= 0.8) | 46.44% |
-| `exactPassAtK` (task-level, any trial >= 0.8) | **66.78%** (601/900) |
-| Trial statuses | 2096 completed (77.6%) / 604 failed (22.2%) |
+| Average answer F1 (raw) | **0.6653** |
+| Average answer F1 (adjusted, 2688 gradable trials) | 0.6683 |
+| Trial pass rate (score >= 0.8) | **58.0%** (1566/2700) |
+| `exactPassAtK` (task-level, any trial >= 0.8) | **71.22%** (641/900) |
+| Trial statuses | 2695 completed (99.8%) / 1 failed / 4 timed out |
 | Ungradable trials | 12 |
 
 Cost and process (from `data/summary.json`):
 
 | Metric | Value |
 | --- | --- |
-| Model cost | $104.03 |
-| You.com API cost | $117.55 |
-| Total cost | $221.58 |
-| Input tokens | 254.4M |
-| Output tokens | 8.6M |
-| Avg tool-call events / trial | 19.3 (incl. started+completed events per call) |
-| Failed tool-call events (budget-cap blocks) | 3068 |
+| Model cost | $107.17 |
+| You.com API cost | $190.04 |
+| Total cost | $297.21 |
+| Avg total cost / trial | $0.1101 |
+| Input tokens | 203.3M |
+| Output tokens | 16.3M |
+| Avg tool-call events / trial | 31.6 (incl. started+completed events per call) |
+| Failed tool-call events (budget-cap blocks) | 5025 |
 | Error events | 0 |
-| Avg end-to-end latency / trial | 108.3s |
+| Avg end-to-end latency / trial | 141.2s |
 
-Run history: the first full grade (before the `models.json` maxTokens fix) scored F1 0.4262 / pass@K 53.22% with 37.3% of trials dying on a deterministic provider 400 (pi requested a near-full-window `max_tokens` against the registry `maxTokens: 117964`; see `analysis/README.md` §6 for the evidence chain). After committing the `models.json` override (`maxTokens: 16384`) and regenerating the 197 all-failed tasks (`RETRY_FAILED=1`), trial completion rose from 62.8% to 77.6% and the headline moved to F1 0.5341 / pass@K 66.78%. Observations for this model, not cross-model conclusions: of the 604 still-failed trials, ~190 are a genuine second-order overflow (trials that accumulated 114k+ input tokens of unbounded tool results and hit the true 131072 window — surfaced by the adapter's errorMessage capture), and ~414 are stale pre-fix failures on tasks with at least one completed trial. Among completed trials the answer-quality failure patterns are: fully incorrect 424 (final-step reasoning), incomplete set enumeration 278, and correct-but-extraneous 131 (candidate-set dump; the model has every correct answer but lists extras).
+Progress across the three configurations evaluated on this model (all 900 tasks, K=3):
+
+| Run | Trial deaths | Avg F1 (raw) | Trial pass rate | pass@K |
+| --- | --- | --- | --- | --- |
+| 2026-09-11 initial (registry `maxTokens: 117964`, cap 10, medium) | 37.3% (provider 400s) | 0.4262 | 37.0% | 53.22% |
+| 2026-09-11 + maxTokens fix + retry (cap 10, medium) | 22.2% | 0.5341 | 46.4% | 66.78% |
+| **2026-09-12 cap15 + high thinking + truncation (current defaults)** | **0.2%** | **0.6653** | **58.0%** | **71.22%** |
+
+Observations for this model, not cross-model conclusions: the A/B-validated levers (15-call budget, high thinking) plus per-result truncation eliminated the trial-death tiers — 99.8% of trials now complete and produce an answer, up from 62.8% in the first run. The remaining failures are almost entirely answer-quality, not harness: fully incorrect 612 (final-step reasoning — barely movable by budget or thinking per the A/B buckets), incomplete set enumeration 374, correct-but-extraneous 131. The next frontier is the model itself or a stronger reasoning/synthesis loop, not harness mechanics.
 
 For reference, the DeepSearchQA paper's Table 4 reports GPT-5 High Reasoning at 73.24 F1, Gemini 3 Pro Preview at 76.86 F1, GPT-5 Pro High Reasoning at 78.98 F1, and Gemini Deep Research Agent at 81.90 F1.
 
