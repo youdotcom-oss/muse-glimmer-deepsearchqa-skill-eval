@@ -57,6 +57,7 @@ bun run download       # download published artifacts from HF into data/
 bun run upload         # upload README.md and data/* to HF
 bun run query          # query large JSONL artifacts with clickhouse-local
 bun run ab             # 2x2 A/B grid (tool budget x thinking level) on a sample
+bun run probe          # partner-probe repro: measure you-search response sizes for the partner-reported >1MB responses
 bun run analysis       # tool/skill usage analysis over data/*.jsonl
 bun run check          # typecheck + tests
 ```

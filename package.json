@@ -16,7 +16,8 @@
     "analysis": "bun run analysis/index.ts > analysis/README.md",
     "check": "bun run typecheck && bun test && bun run biome",
     "biome": "biome check .",
-    "typecheck": "bun --bun tsc --noEmit"
+    "typecheck": "bun --bun tsc --noEmit",
+    "probe": "bun run scripts/partner-probe.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.13",
