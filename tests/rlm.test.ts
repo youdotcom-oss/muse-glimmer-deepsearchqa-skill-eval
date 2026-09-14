@@ -8,6 +8,7 @@ import {
   chunkText,
   DUMP_DIR_PREFIX,
   DumpStore,
+  EXTRACTION_SYSTEM_PROMPT,
   FULL_PAGE_STEERING_NOTE,
   formatExtractionFallback,
   formatExtractionSuccess,
@@ -43,10 +44,18 @@ function fakeUsage(n: number): Usage {
 const testConfig: Pick<RlmConfig, 'chunkChars' | 'maxChunks'> = { chunkChars: 200, maxChunks: 3 }
 
 describe('RLM_CONFIG (fixed constants, no env knobs)', () => {
-  test('extraction triggers at the truncation cap and chunks fit muse 131k window', () => {
-    expect(RLM_CONFIG.minChars).toBe(12_000)
-    expect(RLM_CONFIG.chunkChars).toBe(300_000)
+  test('chunks fit muse 131k window at measured ~2 chars/token web density', () => {
+    // Measured in the smoke: web content is ~2 chars/token (52k tokens ≈ 100k chars),
+    // so 300k chars ≈ 150k tokens — over the 131,072 window. 200k chars ≈ 100k tokens.
+    expect(RLM_CONFIG.chunkChars).toBe(200_000)
     expect(RLM_CONFIG.maxChunks).toBe(8)
+  })
+
+  test('sub-call output is capped (latency: sub-calls are output-bound, ~230 tok/s)', () => {
+    expect(RLM_CONFIG.maxOutputTokens).toBe(1_500)
+    // The prompt carries the same instruction so the model stops before the cap.
+    expect(EXTRACTION_SYSTEM_PROMPT).toMatch(/1,?200 tokens|dense/i)
+    expect(EXTRACTION_SYSTEM_PROMPT).toMatch(/no preamble|no introduction/i)
   })
 })
 
@@ -248,7 +257,7 @@ describe('narrowToGoal (hybrid grep: scaffold narrows, one sub-call extracts)', 
     expect(narrowed?.text).toContain('released in 2009')
     expect(narrowed?.text).toContain('uncommon rarity')
     expect(narrowed?.text).not.toContain('totally unrelated filler')
-    expect(narrowed!.text.length).toBeLessThanOrEqual(50_000)
+    expect((narrowed?.text ?? '').length).toBeLessThanOrEqual(50_000)
     expect(narrowed?.matchedRegions).toBe(2)
   })
 
@@ -260,8 +269,9 @@ describe('narrowToGoal (hybrid grep: scaffold narrows, one sub-call extracts)', 
     // appear before the first region separator.
     expect(narrowed?.text).toContain('released 2009')
     expect(narrowed?.text).toContain('uncommon rarity')
-    expect(narrowed!.text.indexOf('released 2009')).toBeLessThan(narrowed!.text.indexOf('[…]'))
-    expect(narrowed!.text.indexOf('uncommon rarity')).toBeLessThan(narrowed!.text.indexOf('[…]'))
+    const mergedText = narrowed?.text ?? ''
+    expect(mergedText.indexOf('released 2009')).toBeLessThan(mergedText.indexOf('[…]'))
+    expect(mergedText.indexOf('uncommon rarity')).toBeLessThan(mergedText.indexOf('[…]'))
     expect(narrowed?.matchedRegions).toBe(2)
   })
 

@@ -114,7 +114,9 @@ function makeSubCall(ctx: ExtensionContext, signal: AbortSignal | undefined): Su
         systemPrompt,
         messages: [{ role: 'user', content: [{ type: 'text', text: userText }], timestamp: Date.now() }],
       },
-      { signal },
+      // Output-bound sub-calls: hard cap keeps extraction latency bounded
+      // (the prompt asks for ~1,200 tokens; the ceiling truncates at 1,500).
+      { signal, maxTokens: RLM_CONFIG.maxOutputTokens },
     )
     if (response.stopReason === 'error' || response.errorMessage) {
       throw new Error(response.errorMessage ?? `sub-call stopReason ${response.stopReason}`)
