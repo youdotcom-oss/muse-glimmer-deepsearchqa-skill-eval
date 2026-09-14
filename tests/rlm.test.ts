@@ -1,10 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import type { Usage } from '@earendil-works/pi-ai'
 import {
   buildDefaultGoal,
   buildQueryRepeatNote,
-  chunkText,
-  EXTRACTION_SYSTEM_PROMPT,
+  buildSearchDistillPrompt,
+  buildTargetDistillPrompt,
+  collateContracts,
   FULL_PAGE_STEERING_NOTE,
   formatExtractionFallback,
   formatExtractionSuccess,
@@ -13,36 +13,18 @@ import {
   isFullPageSearch,
   narrowToGoal,
   normalizeQuery,
+  parseContentsResponse,
   parseExtractionContract,
   QueryDeduper,
   queriesSimilar,
   RLM_CONFIG,
-  type RlmConfig,
-  runChunkedExtraction,
-  type SubCall,
-  scanInteractiveHtml,
-  shouldRetryWithHtml,
 } from '../src/rlm.ts'
 
-function fakeUsage(n: number): Usage {
-  return {
-    input: n,
-    output: n,
-    cacheRead: 0,
-    cacheWrite: 0,
-    totalTokens: n * 2,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: n / 1000 },
-  }
-}
-
-const testConfig: Pick<RlmConfig, 'chunkChars' | 'maxChunks'> = { chunkChars: 200, maxChunks: 3 }
-
 describe('RLM_CONFIG (fixed constants, no env knobs)', () => {
-  test('chunks fit muse 131k window at measured ~2 chars/token web density', () => {
+  test('fixed constants: chunk boundary fits muse 131k window at measured ~2 chars/token web density', () => {
     // Measured in the smoke: web content is ~2 chars/token (52k tokens ≈ 100k chars),
     // so 300k chars ≈ 150k tokens — over the 131,072 window. 200k chars ≈ 100k tokens.
     expect(RLM_CONFIG.chunkChars).toBe(200_000)
-    expect(RLM_CONFIG.maxChunks).toBe(8)
   })
 
   test('sub-call output is capped (latency: sub-calls are output-bound, ~230 tok/s)', () => {
@@ -51,148 +33,7 @@ describe('RLM_CONFIG (fixed constants, no env knobs)', () => {
     expect(RLM_CONFIG.maxOutputTokens).toBe(1_800)
     // The prompt bounds the array so the cap truncates rarely, and carries the
     // same instruction so the model stops before the cap.
-    expect(EXTRACTION_SYSTEM_PROMPT).toMatch(/at most 10 facts/i)
-    expect(EXTRACTION_SYSTEM_PROMPT).toMatch(/no preamble|no introduction/i)
-  })
-})
-
-describe('chunkText', () => {
-  test('returns a single chunk when text fits', () => {
-    expect(chunkText('hello', 100)).toEqual(['hello'])
-    expect(chunkText('x'.repeat(100), 100)).toEqual(['x'.repeat(100)])
-  })
-
-  test('splits oversized text into chunks no larger than chunkChars, preferring newline boundaries', () => {
-    const line = 'a'.repeat(90)
-    const text = Array.from({ length: 10 }, () => line).join('\n') // ~909 chars
-    const chunks = chunkText(text, 200)
-    expect(chunks.length).toBeGreaterThan(3)
-    for (const chunk of chunks) {
-      expect(chunk.length).toBeLessThanOrEqual(200)
-      expect(chunk.length).toBeGreaterThan(0)
-    }
-    // Newline preference: every chunk except the last ends at a line boundary.
-    for (const chunk of chunks.slice(0, -1)) expect(chunk.endsWith('\n')).toBe(true)
-    // Lossless: concatenation reproduces the input.
-    expect(chunks.join('')).toBe(text)
-  })
-
-  test('hard-splits when there is no newline within the window', () => {
-    const text = 'b'.repeat(500)
-    const chunks = chunkText(text, 200)
-    expect(chunks).toEqual(['b'.repeat(200), 'b'.repeat(200), 'b'.repeat(100)])
-  })
-})
-
-describe('runChunkedExtraction', () => {
-  test('single chunk: one sub-call, no merge pass', async () => {
-    const calls: string[] = []
-    const call: SubCall = async (_system, user) => {
-      calls.push(user)
-      return { text: 'EXTRACTED', usage: fakeUsage(10) }
-    }
-    const outcome = await runChunkedExtraction(call, 'small doc', 'find the thing', testConfig)
-    expect(outcome.text).toBe('EXTRACTED')
-    expect(outcome.chunks).toBe(1)
-    expect(outcome.truncatedToChunks).toBe(false)
-    expect(calls.length).toBe(1)
-    expect(calls[0]).toContain('find the thing')
-    expect(calls[0]).toContain('small doc')
-    expect(calls[0]).not.toContain('chunk 1 of')
-    expect(outcome.usage.input).toBe(10)
-  })
-
-  test('multi chunk: one sub-call per chunk plus one merge pass, usage summed', async () => {
-    const prompts: string[] = []
-    const call: SubCall = async (_system, user) => {
-      prompts.push(user)
-      return { text: `part${prompts.length}`, usage: fakeUsage(10) }
-    }
-    const raw = 'x'.repeat(450) // 3 chunks at 200 chars
-    const outcome = await runChunkedExtraction(call, raw, 'goal', testConfig)
-    expect(outcome.chunks).toBe(3)
-    expect(prompts.length).toBe(4) // 3 map + 1 merge
-    expect(prompts[0]).toContain('chunk 1 of 3')
-    expect(prompts[2]).toContain('chunk 3 of 3')
-    // Merge prompt carries the per-chunk extractions and demands the same
-    // JSON contract so chunked-mode output stays parseable (14/15 -> 15/15).
-    expect(prompts[3]).toContain('part1')
-    expect(prompts[3]).toContain('part3')
-    expect(prompts[3]).toContain('"facts"')
-    expect(prompts[3]).toContain('deduplicated')
-    expect(outcome.text).toBe('part4')
-    expect(outcome.usage.input).toBe(40)
-    expect(outcome.usage.cost.total).toBeCloseTo(0.04)
-  })
-
-  test('input beyond maxChunks * chunkChars is truncated before extraction', async () => {
-    let sawLength = 0
-    const call: SubCall = async (_system, user) => {
-      sawLength = Math.max(sawLength, user.length)
-      return { text: 'E', usage: undefined }
-    }
-    const raw = 'y'.repeat(10_000) // max input = 3 * 200 = 600
-    const outcome = await runChunkedExtraction(call, raw, 'goal', testConfig)
-    expect(outcome.truncatedToChunks).toBe(true)
-    expect(outcome.chunks).toBe(3)
-    expect(sawLength).toBeLessThan(1000) // prompts wrap at most 600 chars of document
-    expect(outcome.usage.input).toBe(0) // missing usage contributes zero
-  })
-
-  test('chunks extract concurrently (map is parallel; merge waits for all)', async () => {
-    let active = 0
-    let maxActive = 0
-    const order: number[] = []
-    const call: SubCall = async (_system, user) => {
-      active += 1
-      maxActive = Math.max(maxActive, active)
-      // Stagger completion so a sequential loop would finish in order while
-      // a parallel one overlaps.
-      if (user.includes('Merge them')) {
-        await new Promise((resolve) => setTimeout(resolve, 10))
-        active -= 1
-        return { text: 'MERGED', usage: fakeUsage(10) }
-      }
-      const n = Number(user.match(/chunk (\d+)/)?.[1] ?? 0)
-      await new Promise((resolve) => setTimeout(resolve, 30 - n * 5))
-      active -= 1
-      order.push(n)
-      return { text: `part${n}`, usage: fakeUsage(10) }
-    }
-    const raw = 'x'.repeat(450) // 3 chunks
-    const outcome = await runChunkedExtraction(call, raw, 'goal', testConfig)
-    expect(maxActive).toBeGreaterThan(1) // actually overlapped
-    expect(outcome.chunks).toBe(3)
-    expect(outcome.text).toBe('MERGED') // merge still runs after all chunks
-    // Order-independent: all chunks fed the merge regardless of finish order.
-    expect([...order].sort().join()).toBe('1,2,3')
-    expect(outcome.usage.input).toBe(40)
-  })
-
-  test('a failing sub-call rejects (caller falls back to raw text)', async () => {
-    const call: SubCall = async () => {
-      throw new Error('provider 500')
-    }
-    await expect(runChunkedExtraction(call, 'doc', 'goal', testConfig)).rejects.toThrow('provider 500')
-  })
-})
-
-describe('formatExtractionSuccess reads ledger (retry observability)', () => {
-  test('renders per-read ledger when a retry happened', () => {
-    const reads = [
-      { format: 'markdown' as const, facts: 0, won: false },
-      { format: 'html' as const, facts: 6, won: true },
-    ]
-    const text = formatExtractionSuccess(60_000, 1, 'facts here', false, reads)
-    expect(text).toContain('markdown: 0 facts')
-    expect(text).toContain('html: 6 facts (won)')
-    expect(text).toContain('2 reads')
-  })
-
-  test('single read renders the plain header (no reads ledger)', () => {
-    const text = formatExtractionSuccess(42_000, 1, 'the facts', false)
-    expect(text).toContain('42000 chars')
-    expect(text).not.toContain('markdown:')
+    expect(buildSearchDistillPrompt({ task: 't', query: 'q', rawResults: 'r' })).toMatch(/max 10/i)
   })
 })
 
@@ -241,6 +82,50 @@ describe('result text formats (model-facing contract)', () => {
     expect(text).not.toContain('/tmp/d.md')
     expect(text).not.toContain('grep-dump')
     expect(text.endsWith('RAWBODY')).toBe(true)
+  })
+})
+
+describe('stage-1/stage-2 distill prompts (one user message, no system role)', () => {
+  const TASK = 'Which fires involved more than 1000 suppression units after 2010?'
+
+  test('search distill: single self-contained message with instructions, JSON shape, verdict semantics, task, query, results', () => {
+    const prompt = buildSearchDistillPrompt({
+      task: TASK,
+      query: 'san francisco fire database suppression units',
+      rawResults: 'RESULT BODY LINE',
+    })
+    // Self-contained: worker instructions + JSON shape ride in the same
+    // message — there is no system role in a v7 sub-call.
+    expect(prompt).toContain('ONLY with')
+    expect(prompt).toContain('untrusted')
+    expect(prompt).toContain('"sufficient"')
+    expect(prompt).toContain('"targets"')
+    expect(prompt).toMatch(/max 10/i)
+    expect(prompt).toContain('no document reads')
+    expect(prompt).toContain(TASK)
+    expect(prompt).toContain('san francisco fire database suppression units')
+    expect(prompt).toContain('RESULT BODY LINE')
+  })
+
+  test('search distill: truncates the overall task to 500 chars', () => {
+    const prompt = buildSearchDistillPrompt({ task: 'w'.repeat(700), query: 'q', rawResults: 'r' })
+    expect(prompt).toContain('w'.repeat(500))
+    expect(prompt).not.toContain('w'.repeat(501))
+  })
+
+  test('target distill: embeds task, original query, the stage-1 extract guidance, and the document', () => {
+    const prompt = buildTargetDistillPrompt({
+      task: TASK,
+      query: 'san francisco fire database suppression units',
+      guidance: 'Find the table of post-2010 fires with over 1000 suppression units.',
+      doc: 'DOCUMENT BODY',
+    })
+    expect(prompt).toContain('ONLY with')
+    expect(prompt).toContain('untrusted')
+    expect(prompt).toContain(TASK)
+    expect(prompt).toContain('san francisco fire database suppression units')
+    expect(prompt).toContain('Find the table of post-2010 fires with over 1000 suppression units.')
+    expect(prompt).toContain('DOCUMENT BODY')
   })
 })
 
@@ -368,6 +253,50 @@ describe('extraction contract (structured sub-call output)', () => {
     expect(parseExtractionContract('{"facts": ["cut mid str').ok).toBe(false)
   })
 
+  test('v7 verdict: parses sufficient + targets; absent sufficient defaults to true (backward compat)', () => {
+    const parsed = parseExtractionContract(
+      JSON.stringify({
+        facts: ['Fact one.'],
+        goal_status: 'partially_satisfied',
+        unresolved_gaps: ['exact year'],
+        confidence: 0.6,
+        sufficient: false,
+        targets: [{ url: 'https://x.gov/report', extract: 'Find the 2019 suppression-unit table.' }],
+      }),
+    )
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) {
+      expect(parsed.contract.sufficient).toBe(false)
+      expect(parsed.contract.targets).toEqual([
+        { url: 'https://x.gov/report', extract: 'Find the 2019 suppression-unit table.' },
+      ])
+    }
+    const legacy = parseExtractionContract(
+      JSON.stringify({ facts: ['Fact one.'], goal_status: 'satisfied', unresolved_gaps: [], confidence: 0.9 }),
+    )
+    expect(legacy.ok).toBe(true)
+    if (legacy.ok) {
+      expect(legacy.contract.sufficient).toBe(true)
+      expect(legacy.contract.targets).toEqual([])
+    }
+  })
+
+  test('v7 verdict validation: >3 targets, malformed entries, and non-boolean sufficient reject', () => {
+    const base = { facts: ['f'], goal_status: 'partially_satisfied', unresolved_gaps: [], confidence: 0.5 }
+    const t = (url: string) => ({ url, extract: 'look' })
+    expect(
+      parseExtractionContract(JSON.stringify({ ...base, sufficient: false, targets: [t('a'), t('b'), t('c'), t('d')] }))
+        .ok,
+    ).toBe(false)
+    expect(
+      parseExtractionContract(JSON.stringify({ ...base, sufficient: false, targets: [{ url: 'https://x' }] })).ok,
+    ).toBe(false)
+    expect(
+      parseExtractionContract(JSON.stringify({ ...base, sufficient: false, targets: [{ extract: 'no url' }] })).ok,
+    ).toBe(false)
+    expect(parseExtractionContract(JSON.stringify({ ...base, sufficient: 'false' })).ok).toBe(false)
+  })
+
   test('rejects invalid goal_status, bad confidence, and non-object output', () => {
     expect(parseExtractionContract(JSON.stringify({ facts: ['f'], goal_status: 'done', confidence: 0.5 })).ok).toBe(
       false,
@@ -377,6 +306,102 @@ describe('extraction contract (structured sub-call output)', () => {
     )
     expect(parseExtractionContract('no json here at all').ok).toBe(false)
     expect(parseExtractionContract('["just", "an array"]').ok).toBe(false)
+  })
+})
+
+describe('collateContracts (sufficiency gate: deeper stage-2 read collates over stage-1)', () => {
+  test('stage-2 facts first (deduped vs stage-1), gap union, worst stage-2 status, min stage-2 confidence', () => {
+    const stage1 = {
+      facts: ['Shared fact.', 'Snippet fact.'],
+      goal_status: 'partially_satisfied' as const,
+      unresolved_gaps: ['gap one', 'gap two'],
+      confidence: 0.8,
+    }
+    const stage2 = [
+      {
+        facts: ['Deep fact A.', 'shared FACT.'],
+        goal_status: 'satisfied' as const,
+        unresolved_gaps: ['gap two', 'gap three'],
+        confidence: 0.9,
+      },
+      { facts: ['Deep fact B.'], goal_status: 'not_found' as const, unresolved_gaps: [], confidence: 0.3 },
+    ]
+    const merged = collateContracts(stage1, stage2)
+    // Stage-2 facts lead; the stage-1 near-duplicate of a stage-2 fact is dropped.
+    expect(merged.facts.slice(0, 3)).toEqual(['Deep fact A.', 'shared FACT.', 'Deep fact B.'])
+    expect(merged.facts).toContain('Snippet fact.')
+    expect(merged.facts).not.toContain('Shared fact.')
+    expect(merged.goal_status).toBe('not_found') // worst of stage-2
+    expect(merged.confidence).toBe(0.3) // min of stage-2
+    expect(merged.unresolved_gaps).toEqual(['gap one', 'gap two', 'gap three'])
+  })
+
+  test('caps and ordering: facts cap 12 (stage-2 first), gaps cap 6 (stage-1 first)', () => {
+    const stage1 = {
+      facts: Array.from({ length: 10 }, (_, i) => `s1 fact ${i}`),
+      goal_status: 'satisfied' as const,
+      unresolved_gaps: Array.from({ length: 5 }, (_, i) => `gap ${i}`),
+      confidence: 0.9,
+    }
+    const stage2 = [
+      {
+        facts: Array.from({ length: 10 }, (_, i) => `s2 fact ${i}`),
+        goal_status: 'partially_satisfied' as const,
+        unresolved_gaps: Array.from({ length: 5 }, (_, i) => `gap ${i + 3}`),
+        confidence: 0.7,
+      },
+    ]
+    const merged = collateContracts(stage1, stage2)
+    expect(merged.facts.length).toBe(12)
+    expect(merged.facts[0]).toBe('s2 fact 0')
+    expect(merged.unresolved_gaps.length).toBe(6)
+    expect(merged.unresolved_gaps[0]).toBe('gap 0')
+  })
+
+  test('no usable stage-2 contracts: stage-1 stands unchanged', () => {
+    const stage1 = {
+      facts: ['Fact one.'],
+      goal_status: 'satisfied' as const,
+      unresolved_gaps: [],
+      confidence: 0.8,
+      suggestion: 'try the PDF',
+    }
+    const merged = collateContracts(stage1, [])
+    expect(merged.facts).toEqual(['Fact one.'])
+    expect(merged.goal_status).toBe('satisfied')
+    expect(merged.confidence).toBe(0.8)
+    expect(merged.suggestion).toBe('try the PDF')
+  })
+})
+
+describe('parseContentsResponse (internal stage-2 fetch → per-URL documents)', () => {
+  const docs = [
+    { url: 'https://a.example/x', title: 'A', markdown: 'Doc A body', metadata: {} },
+    { url: 'https://b.example/y', title: 'B', markdown: 'Doc B body', metadata: {} },
+  ]
+
+  test('reads structuredContent.output first, then the JSON text block; drops malformed entries', () => {
+    expect(parseContentsResponse({ output: docs }, 'unused text')).toEqual([
+      { url: 'https://a.example/x', markdown: 'Doc A body' },
+      { url: 'https://b.example/y', markdown: 'Doc B body' },
+    ])
+    expect(parseContentsResponse(undefined, JSON.stringify({ output: docs })).length).toBe(2)
+    // Trust boundary: entries without a string url or non-empty markdown are
+    // dropped, never passed into a sub-call.
+    expect(
+      parseContentsResponse(
+        {
+          output: [
+            { url: 'https://a' },
+            { url: 'https://b', markdown: '' },
+            'junk',
+            { url: 'https://c', markdown: 'ok' },
+          ],
+        },
+        '',
+      ),
+    ).toEqual([{ url: 'https://c', markdown: 'ok' }])
+    expect(parseContentsResponse(undefined, 'not json at all')).toEqual([])
   })
 })
 
@@ -485,36 +510,6 @@ describe('semantic query dedup (paraphrase thrash)', () => {
     // 3/4 overlap is high; a different municipality is a different facet though.
     const different = deduper.check('Langley ICBC passenger vehicles')
     expect(different.duplicate).toBe(false)
-  })
-})
-
-describe('conditional HTML retry (thin contents extractions on interactive pages)', () => {
-  test('scan reduces html to bare body structure: head gone, attributes stripped, JSON islands kept', async () => {
-    const html = `<html><head><title>t</title><style>body{color:red}</style>
-<script>var analytics = 1;</script>
-<script type="application/json" id="data">{"rows": [[2019, 4.8], [2020, 5.1]]}</script></head>
-<body><nav class="menu" id="nav">Menu</nav>
-<table class="tbl" data-id="7"><tr><td class="x">2020</td><td>5.1</td></tr></table>
-<a href="/report">Full report</a><footer>Copyright</footer></body></html>`
-    const out = await scanInteractiveHtml(html)
-    // Head (title/style/analytics script) is gone; JSON data island survives.
-    expect(out).not.toContain('<style>')
-    expect(out).not.toContain('analytics')
-    expect(out).toContain('{"rows": [[2019, 4.8], [2020, 5.1]]}')
-    // Attributes stripped (except href), bare structure remains.
-    expect(out).not.toContain('class=')
-    expect(out).toContain('href="/report"')
-    expect(out).toContain('2020')
-    expect(out).toContain('Full report')
-    expect(out.length).toBeLessThan(html.length)
-  })
-
-  test('retry gate is the sub-model verdict only: not_found or zero facts, any page', () => {
-    expect(shouldRetryWithHtml('not_found', 0)).toBe(true)
-    expect(shouldRetryWithHtml('partially_satisfied', 0)).toBe(true) // empty facts
-    expect(shouldRetryWithHtml('partially_satisfied', 5)).toBe(false) // has facts
-    expect(shouldRetryWithHtml('satisfied', 3)).toBe(false)
-    expect(shouldRetryWithHtml(undefined, 0)).toBe(true) // prose fallback counts as thin
   })
 })
 

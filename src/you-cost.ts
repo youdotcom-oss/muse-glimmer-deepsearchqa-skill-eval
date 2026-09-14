@@ -15,6 +15,15 @@ export interface YouApiCostSummary extends JsonObject {
 }
 
 export function estimateYouApiUsage(events: ReadonlyArray<Record<string, unknown>>): YouApiCostSummary {
+  // MINIMAL: the RLM v7 stage-2 page reads are internal you-contents fetches
+  // executed inside the you-search tool call — they produce no tool_call
+  // event, so they are undercounted here (the parallel distill sub-calls' FC
+  // usage rides the tool result's usage, which is counted separately from
+  // this You.com API estimate). Upgrade path: read
+  // `details.rlm.internalContentsCalls` from completed you-search
+  // trajectories and add those fetches (plus their URL counts, recorded in
+  // details.rlm.stage2.urls) to contentsCalls/contentsPages. Do not build
+  // this until the v7 AB quantifies the gap.
   // Group tool_call events by toolCallId. A call is billed iff it reached
   // status 'completed': You.com bills returned results, and hook-blocked
   // calls (budget, full_page steering, repeat-query dedup) never leave the

@@ -1,31 +1,42 @@
 /** You.com MCP bridge for Pi: dash-cased `you-search` and `you-contents` with RLM-style
  * depth-1 extraction built in. Root-facing surface stays exactly the two pre-work tools;
- * all heavy-content machinery (internal dumps, deterministic goal grep, distillation
- * sub-calls) lives inside the tools. full_page attempts on you-search are intercepted
- * at the tool_call hook with a budget-free steering note. */
+ * all heavy-content machinery (deterministic goal grep, distillation sub-calls, the
+ * sufficiency-gated stage-2 page reads) lives inside the tools. full_page attempts on
+ * you-search are intercepted at the tool_call hook with a budget-free steering note.
+ *
+ * RLM v7 — two-stage sufficiency-gated distillation: the search sub-model judges
+ * sufficiency relative to the overall task (the meta-query) and its own query; the
+ * extension executes any nominated page reads as one internal you-contents fetch plus
+ * parallel distill sub-calls; the root sees one result. */
 
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { type CallToolResult, Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { type TSchema, Type } from 'typebox'
-import { createBudgetTracker, readMaxToolCalls, readMaxToolResultChars } from './budget-policy.ts'
+import { createBudgetTracker, readMaxToolCalls, readMaxToolResultChars, truncateText } from './budget-policy.ts'
 import {
+  addUsage,
   buildDefaultGoal,
   buildQueryRepeatNote,
+  buildSearchDistillPrompt,
+  buildTargetDistillPrompt,
+  collateContracts,
+  type ExtractionContract,
+  type ExtractionTarget,
+  type FetchedDocument,
   FULL_PAGE_STEERING_NOTE,
   formatExtractionFallback,
   formatExtractionSuccess,
   formatStructuredExtraction,
+  GENERIC_EXTRACTION_GOAL,
   isEmptySearchResult,
   isFullPageSearch,
   narrowToGoal,
+  parseContentsResponse,
   parseExtractionContract,
   QueryDeduper,
-  type ReadLedgerEntry,
   RLM_CONFIG,
-  runChunkedExtraction,
   type SubCall,
-  scanInteractiveHtml,
-  shouldRetryWithHtml,
+  zeroUsage,
 } from './rlm.ts'
 
 const MCP_URL = 'https://api.you.com/mcp?tools=you-search,you-contents'
@@ -106,24 +117,24 @@ function toToolResult(result: CallToolResult): { content: { type: 'text'; text: 
 }
 
 /** Depth-1 RLM sub-call: an isolated, tool-less completion over the same
- * provider/model as the parent session. The raw document arrives inline; the
- * worker has no tools and no filesystem access, so crawled content cannot
- * trigger actions — it can only shape its own extraction. */
+ * provider/model as the parent session. One self-contained prompt (no system
+ * role); the worker has no tools and no filesystem access, so crawled content
+ * cannot trigger actions — it can only shape its own extraction. */
 function makeSubCall(ctx: ExtensionContext, signal: AbortSignal | undefined): SubCall {
-  return async (systemPrompt, userText) => {
+  return async (prompt) => {
     const model = ctx.model
     if (!model) throw new Error('no active model for the extraction sub-call')
     const response = await ctx.modelRegistry.complete(
       model,
       {
-        systemPrompt,
-        messages: [{ role: 'user', content: [{ type: 'text', text: userText }], timestamp: Date.now() }],
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }], timestamp: Date.now() }],
       },
-      // Output-bound sub-calls: hard cap keeps extraction latency bounded,
-      // and reasoning is suppressed — sampled 4/4 JSON adherence only with
-      // reasoningEffort minimal (un-suppressed reasoning starved the output
-      // cap and truncated the contract mid-object).
-      { signal, maxTokens: RLM_CONFIG.maxOutputTokens, reasoningEffort: 'minimal' },
+      // Output-bound sub-calls: hard cap keeps extraction latency bounded.
+      // v7 runs them at reasoningEffort medium — the sufficiency verdict and
+      // target nomination are judgment calls over the task, not pure span
+      // extraction (the v5 minimal setting suppressed reasoning to protect
+      // the output cap; the cap below still bounds latency).
+      { signal, maxTokens: RLM_CONFIG.maxOutputTokens, reasoningEffort: 'medium' },
     )
     if (response.stopReason === 'error' || response.errorMessage) {
       throw new Error(response.errorMessage ?? `sub-call stopReason ${response.stopReason}`)
@@ -153,6 +164,14 @@ function extendedParameters(tool: DiscoveredTool): TSchema {
   } as unknown as TSchema
 }
 
+/** The overall task for distill prompts: the session's research question (the
+ * meta-query) when captured, else the explicit extraction goal, else the
+ * generic extraction contract. */
+function buildTask(researchQuestion: string | undefined, goal: string | undefined): string {
+  if (researchQuestion && researchQuestion.trim().length > 0) return researchQuestion
+  return goal ?? GENERIC_EXTRACTION_GOAL
+}
+
 function buildToolDefinition(tool: DiscoveredTool, getResearchQuestion: () => string | undefined): ToolDefinition {
   return {
     name: tool.name,
@@ -170,7 +189,7 @@ function buildToolDefinition(tool: DiscoveredTool, getResearchQuestion: () => st
       // you-search MCP calls are highlights even if one slips through.
       if (tool.name === 'you-search') delete (mcpArgs as Record<string, unknown>).extraction
       // Defensive pin: contents is markdown-only — html/metadata formats would
-      // bloat the sub-call input, and our chunk sizing is calibrated to markdown.
+      // bloat the sub-call input, and our sizing is calibrated to markdown.
       if (tool.name === 'you-contents') (mcpArgs as Record<string, unknown>).formats = ['markdown']
       try {
         const result = await callTool(tool.name, mcpArgs)
@@ -188,106 +207,177 @@ function buildToolDefinition(tool: DiscoveredTool, getResearchQuestion: () => st
         // contract would eat the steering. Tiny + pre-structured: pass through.
         if (tool.name === 'you-search' && isEmptySearchResult(adapted.details)) return adapted
         const goal = typeof extraction_goal === 'string' && extraction_goal.trim() ? extraction_goal.trim() : undefined
-        const shouldExtract = ctx.model && (goal !== undefined || rawText.length > RLM_CONFIG.minChars)
-        if (!shouldExtract) return adapted
+        if (!ctx.model) return adapted
 
         onUpdate?.({
-          content: [{ type: 'text', text: `[RLM] distilling ${rawText.length} chars in an isolated sub-call...` }],
+          content: [{ type: 'text', text: `[RLM] distilling ${rawText.length} chars in isolated sub-call(s)...` }],
           details: {},
         })
         try {
-          const goalEffective = goal ?? buildDefaultGoal(getResearchQuestion())
+          const researchQuestion = getResearchQuestion()
+          const task = buildTask(researchQuestion, goal)
+          const goalEffective = goal ?? buildDefaultGoal(researchQuestion)
           const subCall = makeSubCall(ctx, signal)
-          // One sub-call per tool call wherever possible: single call when the
-          // raw result fits one chunk; deterministic goal-narrowing to keep it
-          // a single call for giants; bounded chunk+map only when narrowing
-          // finds nothing.
+          const adaptedDetails = typeof adapted.details === 'object' && adapted.details !== null ? adapted.details : {}
+
+          if (tool.name === 'you-search') {
+            // ---- Stage 1: search distillation with a sufficiency verdict. ----
+            const query = typeof mcpArgs.query === 'string' ? (mcpArgs.query as string) : ''
+            const usage = zeroUsage()
+            const stage1 = await subCall(buildSearchDistillPrompt({ task, query, rawResults: rawText }))
+            addUsage(usage, stage1.usage)
+            const contract = parseExtractionContract(stage1.text)
+            if (!contract.ok) {
+              // Prose fallback: never discard the paid-for search. Raw text,
+              // truncated to the budget-policy per-result cap (the tool_result
+              // hook would apply the same ceiling later anyway).
+              const text = truncateText(rawText, readMaxToolResultChars(process.env))
+              return {
+                content: [{ type: 'text', text: formatExtractionFallback(rawText.length, 'no JSON contract', text) }],
+                details: {
+                  ...adaptedDetails,
+                  rlm: { contract: 'prose', originalLength: rawText.length, internalContentsCalls: 0 },
+                },
+                usage,
+              }
+            }
+            const c = contract.contract
+            const targets = c.targets ?? []
+
+            // ---- Stage 2: gated contents exploration (deterministic). ----
+            let targetDocs: { target: ExtractionTarget; doc: string }[] = []
+            if (c.sufficient === false && targets.length > 0) {
+              onUpdate?.({
+                content: [
+                  {
+                    type: 'text',
+                    text: `[RLM] snippets insufficient for the task — reading ${targets.length} page(s) inside the tool call...`,
+                  },
+                ],
+                details: {},
+              })
+              const urls = targets.map((t) => t.url)
+              let docs: FetchedDocument[] = []
+              try {
+                // Internal fetch: no new tool_call event — one you-contents
+                // call for all nominated URLs (≤3, validated by the parser).
+                const contentsResult = await callTool('you-contents', { urls: [...urls], formats: ['markdown'] })
+                if (!contentsResult.isError) {
+                  const contentsAdapted = toToolResult(contentsResult)
+                  docs = parseContentsResponse(
+                    contentsAdapted.details,
+                    contentsAdapted.content.map((block) => block.text).join('\n'),
+                  )
+                }
+              } catch {
+                // Best-effort: the stage-1 result stands below.
+              }
+              targetDocs = targets
+                .map((t) => ({ target: t, doc: docs.find((d) => d.url === t.url)?.markdown }))
+                .filter((pair): pair is { target: ExtractionTarget; doc: string } => typeof pair.doc === 'string')
+            }
+
+            if (targetDocs.length === 0) {
+              // Sufficient verdict, no usable targets, or fetch errored/empty:
+              // the stage-1 result is the result (never discard the paid read).
+              const extractedText = formatStructuredExtraction(c)
+              return {
+                content: [{ type: 'text', text: formatExtractionSuccess(rawText.length, 1, extractedText, false) }],
+                details: {
+                  ...adaptedDetails,
+                  rlm: {
+                    mode: 'single',
+                    contract: 'json',
+                    goalStatus: c.goal_status,
+                    facts: c.facts.length,
+                    confidence: c.confidence,
+                    unresolvedGaps: c.unresolved_gaps,
+                    suggestion: c.suggestion,
+                    originalLength: rawText.length,
+                    extractedLength: extractedText.length,
+                    internalContentsCalls: 0,
+                  },
+                },
+                usage,
+              }
+            }
+
+            // One distill sub-call per fetched document, parallel, shared task.
+            const stage2Outputs = await Promise.all(
+              targetDocs.map(({ target, doc }) => {
+                let input = doc
+                if (input.length > RLM_CONFIG.chunkChars) {
+                  const narrowed = narrowToGoal(input, goalEffective, RLM_CONFIG.chunkChars)
+                  input = narrowed ? narrowed.text : input.slice(0, RLM_CONFIG.chunkChars)
+                }
+                return subCall(buildTargetDistillPrompt({ task, query, guidance: target.extract, doc: input }))
+              }),
+            )
+            const stage2Contracts: ExtractionContract[] = []
+            for (const output of stage2Outputs) {
+              addUsage(usage, output.usage)
+              const parsed = parseExtractionContract(output.text)
+              if (parsed.ok) stage2Contracts.push(parsed.contract)
+            }
+            const collated = collateContracts(c, stage2Contracts)
+            const extractedText = formatStructuredExtraction(collated)
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: formatExtractionSuccess(rawText.length, 1 + stage2Contracts.length, extractedText, false),
+                },
+              ],
+              details: {
+                ...adaptedDetails,
+                rlm: {
+                  mode: 'two-stage',
+                  contract: 'json',
+                  goalStatus: collated.goal_status,
+                  facts: collated.facts.length,
+                  confidence: collated.confidence,
+                  unresolvedGaps: collated.unresolved_gaps,
+                  suggestion: collated.suggestion,
+                  originalLength: rawText.length,
+                  extractedLength: extractedText.length,
+                  stage2: {
+                    urls: targetDocs.map((pair) => pair.target.url),
+                    facts: stage2Contracts.reduce((n, p) => n + p.facts.length, 0),
+                  },
+                  internalContentsCalls: 1,
+                },
+              },
+              usage,
+            }
+          }
+
+          // ---- you-contents: single-stage distillation (direct read). ----
+          if (goal === undefined && rawText.length <= RLM_CONFIG.minChars) return adapted
           let extractionInput = rawText
-          let mode: 'single' | 'narrowed' | 'chunked' = 'single'
-          let narrowedRegions: number | undefined
+          let mode: 'single' | 'narrowed' = 'single'
+          let inputTruncated = false
           if (rawText.length > RLM_CONFIG.chunkChars) {
             const narrowed = narrowToGoal(rawText, goalEffective, RLM_CONFIG.chunkChars)
             if (narrowed) {
               extractionInput = narrowed.text
-              narrowedRegions = narrowed.matchedRegions
               mode = 'narrowed'
             } else {
-              mode = 'chunked'
+              extractionInput = rawText.slice(0, RLM_CONFIG.chunkChars)
+              inputTruncated = true
             }
           }
-          const outcome = await runChunkedExtraction(subCall, extractionInput, goalEffective, RLM_CONFIG)
-          // Structured contract: JSON in, lean facts + gaps out. A parse
-          // failure degrades to prose extraction (the pre-contract behavior);
-          // it must never discard the result the call already paid for.
-          let contract = parseExtractionContract(outcome.text)
-          // Per-read ledger for retry observability (details.rlm.reads).
-          const reads: ReadLedgerEntry[] = [
-            {
-              format: 'markdown',
-              facts: contract.ok ? contract.contract.facts.length : 0,
-              won: true,
-            },
-          ]
-          // Conditional HTML retry (you-contents, by default — part of reading):
-          // the sub-model's verdict is the only signal. Thin first read ->
-          // re-fetch with html, scan to bare structure, re-distill, keep the
-          // better read. Both reads are paid; their usage accumulates.
-          // MINIMAL: retry gate is narrow (not_found/zero-facts) to avoid
-          // double-spending on every partially_satisfied read. Upgrade path:
-          // widen to low-fact-count reads once retry cost is measured.
-          if (
-            shouldRetryWithHtml(
-              contract.ok ? contract.contract.goal_status : undefined,
-              contract.ok ? contract.contract.facts.length : 0,
-            )
-          ) {
-            onUpdate?.({
-              content: [{ type: 'text', text: '[RLM] thin extraction — retrying with html format...' }],
-              details: {},
-            })
-            try {
-              const retryResult = await callTool(tool.name, { ...mcpArgs, formats: ['html'] })
-              const retryAdapted = toToolResult(retryResult)
-              if (!retryResult.isError) {
-                const retryRaw = retryAdapted.content.map((block) => block.text).join('\n')
-                if (!isEmptySearchResult(retryAdapted.details) && retryRaw.length > 0) {
-                  const scanned = await scanInteractiveHtml(retryRaw)
-                  const retryOutcome = await runChunkedExtraction(subCall, scanned, goalEffective, RLM_CONFIG)
-                  const retryContract = parseExtractionContract(retryOutcome.text)
-                  const retryFacts = retryContract.ok ? retryContract.contract.facts.length : 0
-                  const firstFacts = contract.ok ? contract.contract.facts.length : 0
-                  if (retryFacts > firstFacts) {
-                    contract = retryContract.ok ? retryContract : contract
-                    outcome.text = retryOutcome.text
-                    outcome.chunks = retryOutcome.chunks
-                  }
-                  // Both reads were paid; usage always accumulates.
-                  outcome.usage.input += retryOutcome.usage.input
-                  outcome.usage.output += retryOutcome.usage.output
-                  outcome.usage.totalTokens += retryOutcome.usage.totalTokens
-                  outcome.usage.cost.total += retryOutcome.usage.cost.total
-                }
-              }
-            } catch {
-              // Retry is best-effort; the first read remains the result.
-            }
-          }
+          const outcome = await subCall(
+            buildTargetDistillPrompt({ task, query: '', guidance: goalEffective, doc: extractionInput }),
+          )
+          const contract = parseExtractionContract(outcome.text)
+          const usage = addUsage(zeroUsage(), outcome.usage)
           const extractedText = contract.ok ? formatStructuredExtraction(contract.contract) : outcome.text
           return {
             content: [
-              {
-                type: 'text',
-                text: formatExtractionSuccess(
-                  rawText.length,
-                  outcome.chunks,
-                  extractedText,
-                  outcome.truncatedToChunks,
-                  reads,
-                ),
-              },
+              { type: 'text', text: formatExtractionSuccess(rawText.length, 1, extractedText, inputTruncated) },
             ],
             details: {
-              ...(typeof adapted.details === 'object' && adapted.details !== null ? adapted.details : {}),
+              ...adaptedDetails,
               rlm: {
                 mode,
                 contract: contract.ok ? 'json' : 'prose',
@@ -296,15 +386,13 @@ function buildToolDefinition(tool: DiscoveredTool, getResearchQuestion: () => st
                 confidence: contract.ok ? contract.contract.confidence : undefined,
                 unresolvedGaps: contract.ok ? contract.contract.unresolved_gaps : undefined,
                 suggestion: contract.ok ? contract.contract.suggestion : undefined,
-                chunks: outcome.chunks,
                 originalLength: rawText.length,
                 extractedLength: extractedText.length,
-                truncated: outcome.truncatedToChunks,
-                narrowedRegions,
-                reads,
+                truncated: inputTruncated,
+                internalContentsCalls: 0,
               },
             },
-            usage: outcome.usage,
+            usage,
           }
         } catch (error) {
           // Extraction failure must degrade to raw text (the budget-policy
