@@ -483,6 +483,26 @@ describe('semantic query dedup (paraphrase thrash)', () => {
 })
 
 describe('conditional HTML retry (thin contents extractions on interactive pages)', () => {
+  test('scan reduces html to bare body structure: head gone, attributes stripped, JSON islands kept', async () => {
+    const html = `<html><head><title>t</title><style>body{color:red}</style>
+<script>var analytics = 1;</script>
+<script type="application/json" id="data">{"rows": [[2019, 4.8], [2020, 5.1]]}</script></head>
+<body><nav class="menu" id="nav">Menu</nav>
+<table class="tbl" data-id="7"><tr><td class="x">2020</td><td>5.1</td></tr></table>
+<a href="/report">Full report</a><footer>Copyright</footer></body></html>`
+    const out = await scanInteractiveHtml(html)
+    // Head (title/style/analytics script) is gone; JSON data island survives.
+    expect(out).not.toContain('<style>')
+    expect(out).not.toContain('analytics')
+    expect(out).toContain('{"rows": [[2019, 4.8], [2020, 5.1]]}')
+    // Attributes stripped (except href), bare structure remains.
+    expect(out).not.toContain('class=')
+    expect(out).toContain('href="/report"')
+    expect(out).toContain('2020')
+    expect(out).toContain('Full report')
+    expect(out.length).toBeLessThan(html.length)
+  })
+
   test('interactive-page URLs are detected (Tableau, grapher, dashboards)', () => {
     expect(
       isInteractiveDataUrl(
@@ -493,28 +513,6 @@ describe('conditional HTML retry (thin contents extractions on interactive pages
     expect(isInteractiveDataUrl('https://ourworldindata.org/grapher/x.csv?v=1')).toBe(false) // direct CSV: markdown read works
     expect(isInteractiveDataUrl('https://en.wikipedia.org/wiki/New_Zealand')).toBe(false)
     expect(isInteractiveDataUrl('https://example.com/data.pdf')).toBe(false) // PDFs: HTML cannot help
-  })
-
-  test('html scan extracts tables and data islands, drops boilerplate', () => {
-    const html = `<html><head><style>body{color:red}</style><script>var config = {"data": [1,2]};</script></head>
-<body><nav>Menu Home About</nav><h1>Title</h1>
-<table><tr><th>Year</th><th>Rate</th></tr><tr><td>2020</td><td>5.1</td></tr></table>
-<script type="application/json" id="data">{"rows": [[2019, 4.8], [2020, 5.1]]}</script>
-<footer>Copyright</footer></body></html>`
-    const out = scanInteractiveHtml(html)
-    // Tables render as pipe-separated cells (tags stripped), data islands verbatim.
-    expect(out).toContain('Year | Rate | 2020 | 5.1')
-    expect(out).toContain('2020')
-    expect(out).toContain('5.1')
-    expect(out).toContain('2019')
-    expect(out).not.toContain('Menu Home About')
-    expect(out).not.toContain('<style>')
-    expect(out.length).toBeLessThan(html.length)
-  })
-
-  test('page with no tables or data islands returns usable text fallback', () => {
-    const out = scanInteractiveHtml('<html><body><p>Just text content about rates.</p></body></html>')
-    expect(out).toContain('rates')
   })
 
   test('retry triggers on not_found or empty-facts extractions only', () => {

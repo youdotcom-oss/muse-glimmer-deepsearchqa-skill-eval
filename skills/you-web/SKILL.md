@@ -31,13 +31,12 @@ incomplete, give the best-supported partial answer and mark what remains unknown
 ### Phase 2: Investigate
 
 1. **Search broadly**: `you-search` to find relevant pages. Results arrive distilled — each carries extracted facts and its unresolved gaps.
-2. **Read content**: Call `you-contents(urls=[url1,url2])` (1-3 URLs at a time, default `formats: ["markdown"]`) on the most promising URLs. Snippets alone are unreliable — you must read the actual page to get exact values. Always read at least one page before answering.
+2. **Read content**: Call `you-contents(urls=[url1,url2])` (1-3 URLs at a time) on the most promising URLs. Always read at least one page before answering.
 3. **If incomplete**: refine the query and search again. If the question names a source (e.g., "according to the CDC"), pin its domain inline: `you-search(query="... site:cdc.gov")`.
 4. **If still stuck**: do not reword the same query against the same source — change something structural: a different host class (government portal, data catalogue, the publisher's own site), the underlying dataset (CSV/PDF), or a different facet.
 5. For a purely factual question with no named source, `knowledge: "core"` can return licensed factual answers alongside web results.
-6. Interactive data pages (Tableau dashboards, chart-builder URLs like `/grapher/`) rarely yield data to a text crawl — search for the underlying report or dataset instead.
-7. The harness enforces your tool budget (including a gap-directed extension when your base calls are spent) —
-   pace your research in parallel batches and spend calls on closing gaps. Never finish with an empty response.
+6. Interactive data pages (Tableau dashboards, chart-builder URLs like `/grapher/`) usually hide their data behind rendering — when a read comes back thin, prefer the underlying report, dataset, or publisher page over the dashboard.
+7. The harness enforces your tool budget and will tell you when to close gaps and answer — pace your research in parallel batches. Never finish with an empty response.
 
 ### Phase 3: Verify
 
@@ -68,7 +67,6 @@ incomplete, give the best-supported partial answer and mark what remains unknown
 - For table, figure, or appendix questions, if the extraction reports the needed values were not present,
   fetch the source artifact with `you-contents` before computing filters, counts, maxima, minima, ties, or
   intersections.
-- Contents fetches return distilled extractions too; use `html` only when layout or page structure is essential.
 
 ## Historical and Multi-Year Questions
 
