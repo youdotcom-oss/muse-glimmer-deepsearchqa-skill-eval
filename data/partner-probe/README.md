@@ -82,7 +82,49 @@ agentic pattern.
   the failing runs are presumably the ones where the model happened to request full_page on a
   sub-query (probe transcripts were unavailable to confirm directly).
 
-## Recommendations for the partner runtime
+## Postscript — 2026-09-14: measured fix for the 1MB constraint (RLM-style tool-layer distillation)
+
+Follow-up experiments on our agent harness (extension wrapping the same MCP tools) demonstrate
+that the >1MB problem can be eliminated **without giving up full_page** — and that the
+resulting behavior is measurable entirely on the **main-model (root) side**, where the
+partner's 1MB inference-request gate lives.
+
+### What the extension does (the pattern to adopt)
+
+- **Search**: forced highlights (full_page attempts are blocked pre-execution with steering;
+  the response payload never exceeds highlights size — p99 67KB per our full-run data).
+- **Contents**: full page is fetched, then distilled by an isolated sub-model call
+  (same model, private scratchpad, no tools) before the result enters the main context.
+  If that read is judged thin by the sub-model, one HTML re-fetch + re-distill is attempted.
+  One tool call on the wire regardless of internal reads; nested usage accumulates on the
+  tool result.
+- **Result**: across ~788 tool results per 50-trial sample, raw web payload entering the
+  model context was reduced to **1.8–4.3%** of fetched bytes (e.g. 92.3M chars → 1.64M).
+
+### How to measure it (root-side, no sub-call visibility needed)
+
+All quantities below are observable in the **root model's inference requests** — i.e., in
+exactly the traffic the partner's 1MB gate polices:
+
+| Metric | Where it appears | Our v5 sample (50 trials) |
+| --- | --- | --- |
+| Per-tool-result size entering the next root request | the `tool` message content in the request body | capped by distillation (2.3% of raw bytes; ≤ ~12k chars/result) |
+| Root input tokens per turn | the inference request's usage | 13.9k–28.7k per trial (vs. 114k+ overflow tier before) |
+| Root requests under 1MB | request body size | 100% of requests in our runs; the 1.7MB `full_page` payload class never reaches the root |
+
+With tool-layer distillation in place, the partner can keep their 1MB gate on inference
+requests while **re-allowing full_page** (or leaving extraction free): the gate would only
+ever see distilled results. The remaining hard constraint we measured is not response size
+but *document format* (PDF/XLSX data is unextractable by text crawl — a separate failure
+tier, ~3/50 tasks).
+
+### Headline result with this pattern (same 50 tasks, 5 configurations)
+
+Root-model F1 on the primary metric: 0.70 → 0.76 → 0.8054 (latest), pass (Fully Correct)
+0.52 → 0.64, contract adherence 98–100%, cost/trial down ~15% from the truncation-only
+baseline. Judge: DeepSeek v4.1-flash, official rater semantics (paper Appendix A).
+
+## Recommendations for the partner runtime## Recommendations for the partner runtime
 
 1. **Force `extraction: "highlights"`** in their MCP wrapper for probe/small-context traffic
    (or drop `extraction` from the model-writable parameter surface entirely).

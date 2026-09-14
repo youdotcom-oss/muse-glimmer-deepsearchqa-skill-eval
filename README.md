@@ -1,6 +1,26 @@
 # DeepSearchQA Skill Eval Template
 
-A template repository for evaluating chat models on `google/deepsearchqa` using a Pi agent, You.com MCP tools (`you-search`, `you-contents`), and a research Skill. Create a repo from this template, set `MODEL`, and run the full pipeline locally.
+A template repository for evaluating chat models on `google/deepsearchqa`. Create a repo from this template, set `MODEL`, and run the full pipeline locally.
+
+**Architecture — this is no longer purely Skill + MCP.** The agent harness runs an **extension** (`src/extension.ts`) that wraps the You.com MCP tools with RLM-style depth-1 extraction: oversized raw tool results are distilled by isolated, tool-less sub-model calls before anything reaches the root model's context. The three layers:
+
+```text
+root model (the eval subject; sees only distilled facts + gap notes)
+   │  issues you-search / you-contents
+   ▼
+extension (src/extension.ts) — deterministic tool wrapper
+   │  intercepts full_page attempts, repeats, budget overruns (budget-free steering blocks)
+   │  RLM distillation sub-calls (ctx.modelRegistry.complete — same model, own scratchpad,
+   │  no tools, no fs); HTML retry on thin reads; per-read ledger; usage accumulation
+   ▼
+You.com MCP server (api.you.com/mcp) — you-search / you-contents
+```
+
+Key properties: the root never sees raw web dumps (sampled: 47–92M raw chars/trial-set reduced
+to ~2%, 9k+ facts); hook blocks are budget-free; sub-call usage is attached to the tool result
+so cost accounting sees nested-model spend; the skill (`skills/you-web/SKILL.md`) teaches only
+research judgment — all mechanics are extension-deterministic and invisible to the model. See
+`docs/eval-adaptations.md` for the eval-specific-vs-portable catalog.
 
 The pipeline is:
 
@@ -8,9 +28,9 @@ The pipeline is:
 DeepSearchQA dataset
         │
         ▼
-scaffold ──► prompts.jsonl ──► generate ──► trajectories.jsonl
-                                                │
-                                                ▼
+scaffold ──► prompts.jsonl ──► generate ──► trajectories.jsonl   (pi session per trial:
+                                                │                 root model + extension
+                                                ▼                 wrapping MCP tools)
                                       grade ──► graded.jsonl + summary.json
                                                 │
                                                 ▼
