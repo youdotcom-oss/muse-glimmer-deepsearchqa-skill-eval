@@ -16,7 +16,6 @@ import {
   formatStructuredExtraction,
   isEmptySearchResult,
   isFullPageSearch,
-  isInteractiveDataUrl,
   narrowToGoal,
   normalizeQuery,
   parseExtractionContract,
@@ -237,6 +236,25 @@ describe('sweepStaleDumpDirs', () => {
       await rm(freshPath, { recursive: true, force: true })
       await rm(ownPath, { recursive: true, force: true })
     }
+  })
+})
+
+describe('formatExtractionSuccess reads ledger (retry observability)', () => {
+  test('renders per-read ledger when a retry happened', () => {
+    const reads = [
+      { format: 'markdown' as const, facts: 0, won: false },
+      { format: 'html' as const, facts: 6, won: true },
+    ]
+    const text = formatExtractionSuccess(60_000, 1, 'facts here', false, reads)
+    expect(text).toContain('markdown: 0 facts')
+    expect(text).toContain('html: 6 facts (won)')
+    expect(text).toContain('2 reads')
+  })
+
+  test('single read renders the plain header (no reads ledger)', () => {
+    const text = formatExtractionSuccess(42_000, 1, 'the facts', false)
+    expect(text).toContain('42000 chars')
+    expect(text).not.toContain('markdown:')
   })
 })
 
@@ -503,24 +521,12 @@ describe('conditional HTML retry (thin contents extractions on interactive pages
     expect(out.length).toBeLessThan(html.length)
   })
 
-  test('interactive-page URLs are detected (Tableau, grapher, dashboards)', () => {
-    expect(
-      isInteractiveDataUrl(
-        'https://public.tableau.com/app/profile/icbc/viz/VehiclePopulationIntroPage/VehiclePopulationData',
-      ),
-    ).toBe(true)
-    expect(isInteractiveDataUrl('https://ourworldindata.org/grapher/pancreatic-cancer-death-rate')).toBe(true)
-    expect(isInteractiveDataUrl('https://ourworldindata.org/grapher/x.csv?v=1')).toBe(false) // direct CSV: markdown read works
-    expect(isInteractiveDataUrl('https://en.wikipedia.org/wiki/New_Zealand')).toBe(false)
-    expect(isInteractiveDataUrl('https://example.com/data.pdf')).toBe(false) // PDFs: HTML cannot help
-  })
-
-  test('retry triggers on not_found or empty-facts extractions only', () => {
-    expect(shouldRetryWithHtml('not_found', 0, true)).toBe(true)
-    expect(shouldRetryWithHtml('partially_satisfied', 0, true)).toBe(true) // empty facts
-    expect(shouldRetryWithHtml('partially_satisfied', 5, true)).toBe(false) // has facts
-    expect(shouldRetryWithHtml('satisfied', 3, true)).toBe(false)
-    expect(shouldRetryWithHtml('not_found', 0, false)).toBe(false) // not an interactive page
+  test('retry gate is the sub-model verdict only: not_found or zero facts, any page', () => {
+    expect(shouldRetryWithHtml('not_found', 0)).toBe(true)
+    expect(shouldRetryWithHtml('partially_satisfied', 0)).toBe(true) // empty facts
+    expect(shouldRetryWithHtml('partially_satisfied', 5)).toBe(false) // has facts
+    expect(shouldRetryWithHtml('satisfied', 3)).toBe(false)
+    expect(shouldRetryWithHtml(undefined, 0)).toBe(true) // prose fallback counts as thin
   })
 })
 

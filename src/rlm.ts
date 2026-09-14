@@ -174,19 +174,11 @@ export function formatStructuredExtraction(contract: ExtractionContract): string
   return [head, facts].filter((part) => part.length > 0).join('\n') + gaps
 }
 
-/** Interactive-data pages: dashboards and chart builders whose backing data
- * rarely survives a text crawl. Direct data files (.csv) and binary documents
- * (.pdf/.xlsx) are excluded — HTML cannot help either class. */
-export function isInteractiveDataUrl(url: string): boolean {
-  if (/\.(csv|pdf|xlsx?|zip)($|[?#])/i.test(url)) return false
-  return /tableau\.com|\/grapher\/|dashboard|powerbi\.com|data\.studio|lookerstudio|flourish/i.test(url)
-}
-
-/** Conditional HTML retry gate: the extraction was thin (goal not found, or
- * zero facts) AND the page is the interactive class where the HTML DOM
- * sometimes embeds the chart's backing data. Markdown stays the default. */
-export function shouldRetryWithHtml(goalStatus: string | undefined, factCount: number, interactive: boolean): boolean {
-  if (!interactive) return false
+/** Conditional HTML retry gate — the sub-model's own verdict is the only
+ * signal. Markdown-first: any hard-fail read (goal judged not_found, or zero
+ * facts) earns exactly one HTML re-read; partially-satisfied reads with facts
+ * stand, or every mediocre page would double-spend. */
+export function shouldRetryWithHtml(goalStatus: string | undefined, factCount: number): boolean {
   if (goalStatus === 'not_found') return true
   if (factCount === 0) return true
   return false
@@ -628,17 +620,33 @@ export async function sweepStaleDumpDirs(nowMs = Date.now()): Promise<number> {
   return removed
 }
 
+export interface ReadLedgerEntry {
+  format: 'markdown' | 'html'
+  facts: number
+  won: boolean
+}
+
+/** Renders the per-read ledger (markdown vs html retry) only when a retry
+ * actually happened — single reads keep the plain header. */
 export function formatExtractionSuccess(
   originalChars: number,
   chunks: number,
   extracted: string,
   truncatedToChunks: boolean,
+  reads?: ReadLedgerEntry[],
 ): string {
   const flag = truncatedToChunks ? ` The input exceeded the chunk cap, so it was only partially extracted` : ''
+  const ledger =
+    reads && reads.length > 1
+      ? ` (${reads.map((r) => `${r.format}: ${r.facts} facts${r.won ? ' (won)' : ''}`).join(', ')}; ${reads.length} reads)`
+      : ''
   // dumpPath is deliberately NOT included: dumps are internal working files
   // (details.rlm.dumpPath keeps it for observability) and sampled trials showed
   // paths leaking into the model's final answers as citation markers.
-  return `[Sub-model extraction: ${chunks} isolated call(s) distilled ${originalChars} chars.${flag}]\n\n${extracted}`
+  return (
+    `[Sub-model extraction: ${chunks} isolated call(s) distilled ${originalChars} chars;${ledger}${flag}]\n\n` +
+    extracted
+  )
 }
 
 export function formatExtractionFallback(originalChars: number, errorMessage: string, rawText: string): string {

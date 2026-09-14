@@ -17,10 +17,10 @@ import {
   formatStructuredExtraction,
   isEmptySearchResult,
   isFullPageSearch,
-  isInteractiveDataUrl,
   narrowToGoal,
   parseExtractionContract,
   QueryDeduper,
+  type ReadLedgerEntry,
   RLM_CONFIG,
   runChunkedExtraction,
   type SubCall,
@@ -226,19 +226,22 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
           // failure degrades to prose extraction (the pre-contract behavior);
           // it must never discard the result the call already paid for.
           let contract = parseExtractionContract(outcome.text)
+          // Per-read ledger for retry observability (details.rlm.reads).
+          const reads: ReadLedgerEntry[] = [
+            {
+              format: 'markdown',
+              facts: contract.ok ? contract.contract.facts.length : 0,
+              won: true,
+            },
+          ]
           // Conditional HTML retry (you-contents, by default — part of reading):
-          // interactive-data pages sometimes expose backing data only in the
-          // HTML DOM. Thin first read -> re-fetch with html, scan to bare
-          // structure, re-distill, keep the better read. Both reads are paid;
-          // their usage accumulates.
-          const urls = ((mcpArgs as Record<string, unknown>).urls as string[] | undefined) ?? []
-          const interactive =
-            tool.name === 'you-contents' && urls.some((u) => typeof u === 'string' && isInteractiveDataUrl(u))
+          // the sub-model's verdict is the only signal. Thin first read ->
+          // re-fetch with html, scan to bare structure, re-distill, keep the
+          // better read. Both reads are paid; their usage accumulates.
           if (
             shouldRetryWithHtml(
               contract.ok ? contract.contract.goal_status : undefined,
               contract.ok ? contract.contract.facts.length : 0,
-              interactive,
             )
           ) {
             onUpdate?.({
@@ -279,7 +282,13 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
             content: [
               {
                 type: 'text',
-                text: formatExtractionSuccess(rawText.length, outcome.chunks, extractedText, outcome.truncatedToChunks),
+                text: formatExtractionSuccess(
+                  rawText.length,
+                  outcome.chunks,
+                  extractedText,
+                  outcome.truncatedToChunks,
+                  reads,
+                ),
               },
             ],
             details: {
@@ -296,6 +305,7 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
                 extractedLength: extractedText.length,
                 truncated: outcome.truncatedToChunks,
                 narrowedRegions,
+                reads,
                 dumpPath: dump.path,
               },
             },
