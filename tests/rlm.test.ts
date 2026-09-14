@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import type { Usage } from '@earendil-works/pi-ai'
 import {
+  buildDefaultGoal,
   buildQueryRepeatNote,
   chunkText,
   EXTRACTION_SYSTEM_PROMPT,
@@ -192,6 +193,30 @@ describe('formatExtractionSuccess reads ledger (retry observability)', () => {
     const text = formatExtractionSuccess(42_000, 1, 'the facts', false)
     expect(text).toContain('42000 chars')
     expect(text).not.toContain('markdown:')
+  })
+})
+
+describe('buildDefaultGoal (question-aware distillation goal)', () => {
+  test('composes the research question into the goal so the sub-model can filter for relevance', () => {
+    const goal = buildDefaultGoal(
+      'List the fires from the San Francisco database involving more than 1000 suppression units after 2010.',
+    )
+    expect(goal).toContain('San Francisco database')
+    expect(goal).toContain('research question')
+    expect(goal).toContain('facts')
+  })
+
+  test('truncates long questions and flattens newlines', () => {
+    const long = Array.from({ length: 60 }, () => 'word').join(' ') + '\n\nsecond paragraph with\nnewlines'
+    const goal = buildDefaultGoal(long)
+    expect(goal.length).toBeLessThan(800)
+    expect(goal).not.toContain('\n')
+  })
+
+  test('no question captured: falls back to the generic goal', () => {
+    const goal = buildDefaultGoal(undefined)
+    expect(goal).toContain('research question')
+    expect(goal).not.toContain('undefined')
   })
 })
 

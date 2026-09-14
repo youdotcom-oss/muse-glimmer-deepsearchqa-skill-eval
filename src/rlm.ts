@@ -189,6 +189,24 @@ export function shouldRetryWithHtml(goalStatus: string | undefined, factCount: n
   return false
 }
 
+/** Fallback goal when the root did not pass an explicit extraction_goal:
+ * the generic extraction contract (pre-question-aware behavior). */
+export const GENERIC_EXTRACTION_GOAL =
+  "Extract the facts, names, dates, URLs, figures, and conclusions relevant to the user's research question."
+
+const DEFAULT_GOAL_MAX_QUESTION_CHARS = 500
+
+/** Compose the distillation goal so the sub-model can filter for relevance:
+ * the research question is the signal that separates goal-serving facts from
+ * document noise (measured: blind-goal trials answered with schema dumps, and
+ * sub-model gaps literally asked for the question). Falls back to the generic
+ * goal when no question was captured. */
+export function buildDefaultGoal(researchQuestion: string | undefined): string {
+  if (!researchQuestion || researchQuestion.trim().length === 0) return GENERIC_EXTRACTION_GOAL
+  const question = researchQuestion.replace(/\s+/g, ' ').trim().slice(0, DEFAULT_GOAL_MAX_QUESTION_CHARS)
+  return `Extract only the facts, names, dates, URLs, and figures needed to answer this research question: "${question}". Dense facts only, most relevant to the question first.`
+}
+
 /**
  * Pre-scan an interactive page's HTML before distillation: keep only the
  * regions where backing data lives (tables, JSON data islands), dropping

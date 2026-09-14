@@ -9,6 +9,7 @@ import { type CallToolResult, Client, StreamableHTTPClientTransport } from '@mod
 import { type TSchema, Type } from 'typebox'
 import { createBudgetTracker, readMaxToolCalls, readMaxToolResultChars } from './budget-policy.ts'
 import {
+  buildDefaultGoal,
   buildQueryRepeatNote,
   FULL_PAGE_STEERING_NOTE,
   formatExtractionFallback,
@@ -104,9 +105,6 @@ function toToolResult(result: CallToolResult): { content: { type: 'text'; text: 
   return { content, details: (result.structuredContent ?? {}) as unknown }
 }
 
-const EXTRACTION_DEFAULT_GOAL =
-  "Extract the facts, names, dates, URLs, figures, and conclusions relevant to the user's research question."
-
 /** Depth-1 RLM sub-call: an isolated, tool-less completion over the same
  * provider/model as the parent session. The raw document arrives inline; the
  * worker has no tools and no filesystem access, so crawled content cannot
@@ -155,7 +153,7 @@ function extendedParameters(tool: DiscoveredTool): TSchema {
   } as unknown as TSchema
 }
 
-function buildToolDefinition(tool: DiscoveredTool): ToolDefinition {
+function buildToolDefinition(tool: DiscoveredTool, getResearchQuestion: () => string | undefined): ToolDefinition {
   return {
     name: tool.name,
     label: tool.name,
@@ -198,7 +196,7 @@ function buildToolDefinition(tool: DiscoveredTool): ToolDefinition {
           details: {},
         })
         try {
-          const goalEffective = goal ?? EXTRACTION_DEFAULT_GOAL
+          const goalEffective = goal ?? buildDefaultGoal(getResearchQuestion())
           const subCall = makeSubCall(ctx, signal)
           // One sub-call per tool call wherever possible: single call when the
           // raw result fits one chunk; deterministic goal-narrowing to keep it
@@ -330,8 +328,17 @@ function buildToolDefinition(tool: DiscoveredTool): ToolDefinition {
 }
 
 export default async function youToolsExtension(pi: ExtensionAPI): Promise<void> {
+  // Question-aware distillation: capture the session's research question so
+  // the sub-model can filter facts for relevance (the blind-goal default made
+  // sub-model gaps literally ask for the question). First prompt wins; the
+  // eval sends exactly one.
+  let researchQuestion: string | undefined
+  pi.on('before_agent_start', (event) => {
+    researchQuestion ??= event.prompt
+  })
+
   const tools = await discoverTools()
-  for (const tool of tools) pi.registerTool(buildToolDefinition(tool))
+  for (const tool of tools) pi.registerTool(buildToolDefinition(tool, () => researchQuestion))
 
   // full_page steering: intercept BEFORE budget counting. The attempt is
   // blocked with the identify->extract note as the reason — it never leaves
