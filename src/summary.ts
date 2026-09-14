@@ -214,7 +214,10 @@ function toScoredTrial(row: unknown): ScoredTrial {
     taskId: String(object.taskId ?? ''),
     trialIndex: numberValue(object.trialIndex),
     score,
-    pass: gradable && Boolean(answerResult?.pass ?? object.pass) && score >= 0.8,
+    // pass = the official Fully Correct category from the grader (S = G).
+    // The old `score >= 0.8` conjunction is retired — no official metric
+    // used that threshold, and FC implies F1 = 1.0 anyway.
+    pass: gradable && Boolean(answerResult?.pass ?? object.pass),
     gradable,
     toolCallCount: numberValue(process.toolCallCount),
     failedToolCallCount: numberValue(process.failedToolCallCount),

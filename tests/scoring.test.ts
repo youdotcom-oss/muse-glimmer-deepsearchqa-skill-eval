@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import { normalizeMessageRole } from '../src/adapter.ts'
-import { scoreJudgeResult } from '../src/grader.ts'
+import { classifyOutcome, scoreJudgeResult } from '../src/grader.ts'
 import { collectFinalMessage } from '../src/pi-session.ts'
 import { buildSummary, f1Score, writeSummaryFromJsonl } from '../src/summary.ts'
 import {
@@ -17,7 +17,7 @@ describe('answer scoring', () => {
     expect(f1Score(2, 3, 1)).toBeCloseTo(2 / 3, 8)
   })
 
-  test('passes at score >= 0.8', () => {
+  test('F1 score column is unaffected by pass semantics (official FC is pass)', () => {
     const scored = scoreJudgeResult({
       details: [
         { expected: 'A', found: true },
@@ -28,7 +28,54 @@ describe('answer scoring', () => {
       rationale: 'one extra',
     })
     expect(scored.score).toBeCloseTo(6 / 7, 8)
-    expect(scored.pass).toBe(true)
+    // Correct with Extraneous (R=1.0, P<1.0): the hedging category — not FC.
+    expect(scored.pass).toBe(false)
+  })
+
+  test('official categories: fully-correct, fully-incorrect, correct-with-extraneous, partial', () => {
+    // Fully Correct: all found, zero excessive (S = G).
+    expect(classifyOutcome(3, 3, 0)).toBe('fully_correct')
+    // Fully Incorrect: S ∩ G = ∅.
+    expect(classifyOutcome(0, 3, 2)).toBe('fully_incorrect')
+    // Correct with Extraneous: recall 1.0, precision < 1.0.
+    expect(classifyOutcome(3, 3, 2)).toBe('correct_with_extraneous')
+    // Partially Correct: everything else.
+    expect(classifyOutcome(1, 3, 0)).toBe('partially_correct')
+    expect(classifyOutcome(2, 3, 1)).toBe('partially_correct')
+  })
+
+  test('pass equals the Fully Correct category (S = G), not an F1 threshold', () => {
+    // All parts found + one excessive: F1 0.86 but NOT fully correct.
+    const withExtra = scoreJudgeResult({
+      details: [
+        { expected: 'A', found: true },
+        { expected: 'B', found: true },
+      ],
+      excessiveAnswers: ['C'],
+      rationale: 'one extra',
+    })
+    expect(withExtra.score).toBeCloseTo(4 / 5, 8)
+    expect(withExtra.pass).toBe(false)
+    // One missing part: F1 2/3, not fully correct.
+    const missingOne = scoreJudgeResult({
+      details: [
+        { expected: 'A', found: true },
+        { expected: 'B', found: false },
+      ],
+      excessiveAnswers: [],
+      rationale: 'missing',
+    })
+    expect(missingOne.pass).toBe(false)
+    // Clean sweep passes.
+    const clean = scoreJudgeResult({
+      details: [
+        { expected: 'A', found: true },
+        { expected: 'B', found: true },
+      ],
+      excessiveAnswers: [],
+      rationale: 'clean',
+    })
+    expect(clean.pass).toBe(true)
   })
 
   test('penalizes excessive set-answer items', () => {

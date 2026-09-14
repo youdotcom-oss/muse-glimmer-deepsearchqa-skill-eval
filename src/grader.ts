@@ -33,16 +33,23 @@ export interface AnswerScore {
   excessiveCount: number
 }
 
-const SYSTEM_PROMPT = `You are a DeepSearchQA answer grader aligned with the official benchmark rater.
-Compare the candidate answer to the gold answer. Grade semantic correctness, not exact wording.
-"Excessive Answers" lists additional ANSWER ITEMS the candidate presents as part of the final answer
-that are not in the gold list. Citations, URLs, file references, explanations, and supporting context
-are NOT answer items and must never be listed as excessive — unless they assert an additional
-competing or contradictory answer. Do not use outside knowledge except to judge equivalence.
+const SYSTEM_PROMPT = `You are the DeepSearchQA answer rater, following the official benchmark methodology.
+Evaluate whether the candidate response arrived at the correct answer, by semantic equivalence — not exact wording.
+
+Answer Correctness Task:
+- Identify the Prompt Type: "Single Answer" or "Set Answer".
+- For "Single Answer": check whether the response provides the answer that addresses the user's question. It does not have to match the exact wording of the provided answer.
+- For "Set Answer": check whether the response includes EACH item from the ground truth answers. Order does not matter unless specified. Determine correctness only based on the list first, then check if the response includes answers not in the list.
+- "Correctness Details": one entry per expected answer part, with a boolean for whether it was found in the response.
+- "Excessive Answers": answer parts in the response that are NOT in the Correct Answer list. Return an empty list when there are none.
+  Example: gold {Belgium, France}, response adds Italy -> Correctness Details: Belgium found, France found; Excessive Answers: ["Italy"].
+  Citations, URLs, explanations, and supporting context are NOT answer parts and must not be listed as excessive — unless they assert an additional competing answer to a Single-Answer question.
+- Provide a brief Rationale referencing specific parts of the response and the correct answer.
+
 Return only strict JSON with these fields:
 {
   "Correctness Details": [{"expected": "required gold answer part", "found": true/false, "explanation": "short reason"}],
-  "Excessive Answers": ["incorrect extra answer items only"],
+  "Excessive Answers": ["extra answer items not in the gold list"],
   "Rationale": "brief summary"
 }`
 
@@ -128,12 +135,49 @@ export async function gradeFromInput(input: GraderInput): Promise<object> {
   }
 }
 
+export interface AnswerScore {
+  score: number
+  pass: boolean
+  correctCount: number
+  expectedCount: number
+  excessiveCount: number
+}
+
+/**
+ * Official DeepSearchQA category (paper Section 3.1), computed from the
+ * judge's semantic-membership verdicts:
+ * - fully_correct: S = G (all parts found, zero excessive)
+ * - fully_incorrect: S ∩ G = ∅ (no part found)
+ * - correct_with_extraneous: R = 1.0 with excessive items (the hedging mode)
+ * - partially_correct: some but not all parts found
+ */
+export type OutcomeCategory = 'fully_correct' | 'fully_incorrect' | 'correct_with_extraneous' | 'partially_correct'
+
+export function classifyOutcome(correctCount: number, expectedCount: number, excessiveCount: number): OutcomeCategory {
+  if (correctCount === 0) return 'fully_incorrect'
+  if (correctCount === expectedCount) return excessiveCount === 0 ? 'fully_correct' : 'correct_with_extraneous'
+  return 'partially_correct'
+}
+
+/**
+ * Score: per-item F1 (TP vs FN vs FP-excessive) — the paper's primary ranking
+ * metric. Pass: the Fully Correct category (S = G). The prior F1>=0.8
+ * threshold corresponded to no official metric; the benchmark's binary
+ * headline is Fully Correct, and the paper reports the F1<->FC gap ("Last
+ * Mile") as a distinct phenomenon our reporting can now reproduce.
+ */
 export function scoreJudgeResult(judged: NormalizedJudgeResult): AnswerScore {
   const expectedCount = judged.details.length
   const correctCount = judged.details.filter((detail) => detail.found).length
   const excessiveCount = judged.excessiveAnswers.length
   const score = f1Score(correctCount, expectedCount, excessiveCount)
-  return { score, pass: score >= 0.8, correctCount, expectedCount, excessiveCount }
+  return {
+    score,
+    pass: classifyOutcome(correctCount, expectedCount, excessiveCount) === 'fully_correct',
+    correctCount,
+    expectedCount,
+    excessiveCount,
+  }
 }
 
 function buildJudgePrompt(params: {

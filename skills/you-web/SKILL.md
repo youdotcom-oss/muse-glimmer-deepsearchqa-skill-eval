@@ -14,7 +14,9 @@ metadata:
 
 Use `you-search` to discover web sources and `you-contents` to read specific URLs. Search finds candidate sources; reading extracts reliable evidence.
 
-Build answers from read evidence, not snippets alone. Answer with citations from sources that actually support the claim. Always finish with a non-empty answer; if evidence is incomplete, give the best-supported partial answer and mark what remains unknown.
+Answer from your extraction results — each one is a sub-model's distilled read of the actual page, with its
+`Unresolved gaps` reporting what the page did NOT answer. Always finish with a non-empty answer; if evidence is
+incomplete, give the best-supported partial answer and mark what remains unknown.
 
 ## Search Pipeline
 
@@ -23,15 +25,17 @@ Build answers from read evidence, not snippets alone. Answer with citations from
 1. Restate the core question and identify the type of answer required (single value, list, comparison, ranking, explanation).
 2. Break the question into 3-5 research items, and for each draft a 3-6 word keyword query (one facet per query — never paste the whole question).
 3. For each item, list the value/source/date to find and the 3-6 word query for it, plus domain/recency/locale filters only if they clearly help.
+4. Fire the queries for Phase 1's research items together in one parallel batch — the harness runs tool calls concurrently, so a batch costs one round of latency.
 
 ### Phase 2: Investigate
 
-1. **Search broadly**: `you-search` to find relevant pages. Read snippets to identify which pages have the data you need.
+1. **Search broadly**: `you-search` to find relevant pages. Results arrive distilled — each carries extracted facts and its unresolved gaps.
 2. **Read content**: Call `you-contents(urls=[url1,url2])` (1-3 URLs at a time, default `formats: ["markdown"]`) on the most promising URLs. Snippets alone are unreliable — you must read the actual page to get exact values. Always read at least one page before answering.
 3. **If incomplete**: refine the query and search again. If the question names a source (e.g., "according to the CDC"), pin its domain inline: `you-search(query="... site:cdc.gov")`.
 4. **If still stuck**: rephrase the query with broader or more common terms.
 5. For a purely factual question with no named source, `knowledge: "core"` can return licensed factual answers alongside web results.
-6. Budget ~6-8 searches for hard multi-hop questions; stay within 10 total tool calls. Never finish with an empty response.
+6. The harness enforces your tool budget (including a gap-directed extension when your base calls are spent) —
+   pace your research in parallel batches and spend calls on closing gaps. Never finish with an empty response.
 
 ### Phase 3: Verify
 
@@ -57,10 +61,12 @@ Build answers from read evidence, not snippets alone. Answer with citations from
 
 ## Evidence Rules
 
-- Snippets never count as reading. `extraction: "highlights"` returns query-relevant passages — use it only for a single focused fact or to triage; do not treat it as full reading for complex answers.
-- For table, figure, or appendix queries, read the source artifact itself before computing filters, counts, maxima, minima, ties, or intersections — never compute from a snippet.
-- Use `html` only when layout, tables, or page structure are necessary; otherwise prefer `markdown`.
-- Add `metadata` when provenance or page identity matters.
+- Search results and contents fetches are pre-read for you: the sub-model extracted the goal-relevant facts and
+  reported what the document did not answer. Trust the extracted facts; act on the gaps.
+- For table, figure, or appendix questions, if the extraction reports the needed values were not present,
+  fetch the source artifact with `you-contents` before computing filters, counts, maxima, minima, ties, or
+  intersections.
+- Contents fetches return distilled extractions too; use `html` only when layout or page structure is essential.
 
 ## Historical and Multi-Year Questions
 
