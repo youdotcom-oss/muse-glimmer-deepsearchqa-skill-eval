@@ -10,7 +10,6 @@ import { type TSchema, Type } from 'typebox'
 import { createBudgetTracker, readMaxToolCalls, readMaxToolResultChars } from './budget-policy.ts'
 import {
   buildQueryRepeatNote,
-  DumpStore,
   FULL_PAGE_STEERING_NOTE,
   formatExtractionFallback,
   formatExtractionSuccess,
@@ -26,7 +25,6 @@ import {
   type SubCall,
   scanInteractiveHtml,
   shouldRetryWithHtml,
-  sweepStaleDumpDirs,
 } from './rlm.ts'
 
 const MCP_URL = 'https://api.you.com/mcp?tools=you-search,you-contents'
@@ -157,7 +155,7 @@ function extendedParameters(tool: DiscoveredTool): TSchema {
   } as unknown as TSchema
 }
 
-function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore): ToolDefinition {
+function buildToolDefinition(tool: DiscoveredTool): ToolDefinition {
   return {
     name: tool.name,
     label: tool.name,
@@ -195,8 +193,6 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
         const shouldExtract = ctx.model && (goal !== undefined || rawText.length > RLM_CONFIG.minChars)
         if (!shouldExtract) return adapted
 
-        const store = getDumpStore()
-        const dump = await store.write(tool.name, rawText)
         onUpdate?.({
           content: [{ type: 'text', text: `[RLM] distilling ${rawText.length} chars in an isolated sub-call...` }],
           details: {},
@@ -238,6 +234,9 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
           // the sub-model's verdict is the only signal. Thin first read ->
           // re-fetch with html, scan to bare structure, re-distill, keep the
           // better read. Both reads are paid; their usage accumulates.
+          // MINIMAL: retry gate is narrow (not_found/zero-facts) to avoid
+          // double-spending on every partially_satisfied read. Upgrade path:
+          // widen to low-fact-count reads once retry cost is measured.
           if (
             shouldRetryWithHtml(
               contract.ok ? contract.contract.goal_status : undefined,
@@ -255,14 +254,12 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
                 const retryRaw = retryAdapted.content.map((block) => block.text).join('\n')
                 if (!isEmptySearchResult(retryAdapted.details) && retryRaw.length > 0) {
                   const scanned = await scanInteractiveHtml(retryRaw)
-                  const retryDump = await store.write(tool.name, scanned)
                   const retryOutcome = await runChunkedExtraction(subCall, scanned, goalEffective, RLM_CONFIG)
                   const retryContract = parseExtractionContract(retryOutcome.text)
                   const retryFacts = retryContract.ok ? retryContract.contract.facts.length : 0
                   const firstFacts = contract.ok ? contract.contract.facts.length : 0
                   if (retryFacts > firstFacts) {
                     contract = retryContract.ok ? retryContract : contract
-                    dump.path = retryDump.path
                     outcome.text = retryOutcome.text
                     outcome.chunks = retryOutcome.chunks
                   }
@@ -307,7 +304,6 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
                 truncated: outcome.truncatedToChunks,
                 narrowedRegions,
                 reads,
-                dumpPath: dump.path,
               },
             },
             usage: outcome.usage,
@@ -319,7 +315,7 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
           const message = error instanceof Error ? error.message : String(error)
           return {
             content: [{ type: 'text', text: formatExtractionFallback(rawText.length, message, rawText) }],
-            details: { rlmError: message, dumpPath: dump.path },
+            details: { rlmError: message },
           }
         }
       } catch (error) {
@@ -334,20 +330,8 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
 }
 
 export default async function youToolsExtension(pi: ExtensionAPI): Promise<void> {
-  let dumpStore: DumpStore | undefined
-  function getDumpStore(): DumpStore {
-    dumpStore ??= new DumpStore()
-    return dumpStore
-  }
-
   const tools = await discoverTools()
-  for (const tool of tools) pi.registerTool(buildToolDefinition(tool, getDumpStore))
-
-  // Sweep crash residue (SIGKILL'd runs) from other pids; this process's dir
-  // and fresh dirs from concurrent live runs are never touched.
-  pi.on('session_start', () => {
-    void sweepStaleDumpDirs()
-  })
+  for (const tool of tools) pi.registerTool(buildToolDefinition(tool))
 
   // full_page steering: intercept BEFORE budget counting. The attempt is
   // blocked with the identify->extract note as the reason — it never leaves
@@ -379,7 +363,6 @@ export default async function youToolsExtension(pi: ExtensionAPI): Promise<void>
   pi.on('tool_result', (event) => tracker.onToolResult(event.content))
 
   pi.on('session_shutdown', () => {
-    void dumpStore?.cleanup()
     void closeSharedClient()
   })
 }

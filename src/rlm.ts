@@ -18,9 +18,6 @@
  *
  * Pure, unit-tested logic; src/extension.ts wires it into pi.
  */
-import { mkdtemp, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import type { Usage } from '@earendil-works/pi-ai'
 
 /** RLM extraction is always on — this extension is the research-improvement
@@ -569,68 +566,6 @@ export async function runChunkedExtraction(
 
 /** Per-process dump dir prefix; the pid segment lets the startup sweep tell
  * crash residue apart from dirs owned by other live processes. */
-export const DUMP_DIR_PREFIX = `you-dumps-${process.pid}-`
-const ANY_DUMP_DIR = 'you-dumps-'
-const STALE_DUMP_MAX_AGE_MS = 24 * 60 * 60 * 1000
-
-/**
- * Per-session raw-dump store. The extension (not the model) writes files;
- * the root model reads slices through the scoped read-dump tool, which can
- * only resolve paths inside this directory.
- */
-export class DumpStore {
-  private root: string | undefined
-  private counter = 0
-
-  get rootPath(): string | undefined {
-    return this.root
-  }
-
-  async write(toolName: string, text: string): Promise<{ path: string; bytes: number }> {
-    this.root ??= await mkdtemp(join(tmpdir(), DUMP_DIR_PREFIX))
-    this.counter += 1
-    const path = join(this.root, `${String(this.counter).padStart(3, '0')}-${toolName}.md`)
-    await writeFile(path, text, 'utf8')
-    return { path, bytes: Buffer.byteLength(text) }
-  }
-
-  /** Deterministic deletion: remove the whole session dump dir. No-op when
-   * nothing was written. */
-  async cleanup(): Promise<void> {
-    const root = this.root
-    this.root = undefined
-    if (!root) return
-    await rm(root, { recursive: true, force: true })
-  }
-}
-
-/** Crash-residue sweep: remove dump dirs owned by other pids (i.e. dead
- * processes) that are older than 24h. Dirs from this pid and fresh dirs are
- * left alone, so concurrent live runs are never touched. */
-export async function sweepStaleDumpDirs(nowMs = Date.now()): Promise<number> {
-  let removed = 0
-  let names: string[]
-  try {
-    names = await readdir(tmpdir())
-  } catch {
-    return 0
-  }
-  for (const name of names) {
-    if (!name.startsWith(ANY_DUMP_DIR) || name.startsWith(DUMP_DIR_PREFIX)) continue
-    const full = join(tmpdir(), name)
-    try {
-      const info = await stat(full)
-      if (!info.isDirectory()) continue
-      if (nowMs - info.mtimeMs < STALE_DUMP_MAX_AGE_MS) continue
-      await rm(full, { recursive: true, force: true })
-      removed += 1
-    } catch {
-      // best effort
-    }
-  }
-  return removed
-}
-
 export interface ReadLedgerEntry {
   format: 'markdown' | 'html'
   facts: number
@@ -667,10 +602,4 @@ export function formatExtractionFallback(originalChars: number, errorMessage: st
     'Text below is the raw result.]\n\n' +
     rawText
   )
-}
-
-/** Test hook: age a path's mtime without waiting 24h. */
-export async function agePath(path: string, ms: number): Promise<void> {
-  const past = new Date(Date.now() - ms)
-  await utimes(path, past, past)
 }

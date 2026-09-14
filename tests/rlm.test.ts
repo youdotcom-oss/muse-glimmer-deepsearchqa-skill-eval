@@ -1,14 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import type { Usage } from '@earendil-works/pi-ai'
 import {
-  agePath,
   buildQueryRepeatNote,
   chunkText,
-  DUMP_DIR_PREFIX,
-  DumpStore,
   EXTRACTION_SYSTEM_PROMPT,
   FULL_PAGE_STEERING_NOTE,
   formatExtractionFallback,
@@ -27,17 +21,7 @@ import {
   type SubCall,
   scanInteractiveHtml,
   shouldRetryWithHtml,
-  sweepStaleDumpDirs,
 } from '../src/rlm.ts'
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path)
-    return true
-  } catch {
-    return false
-  }
-}
 
 function fakeUsage(n: number): Usage {
   return {
@@ -189,53 +173,6 @@ describe('runChunkedExtraction', () => {
       throw new Error('provider 500')
     }
     await expect(runChunkedExtraction(call, 'doc', 'goal', testConfig)).rejects.toThrow('provider 500')
-  })
-})
-
-describe('DumpStore', () => {
-  test('write records size and path; cleanup removes the dir', async () => {
-    const store = new DumpStore()
-    const { path, bytes } = await store.write('you-contents', 'x'.repeat(26))
-    expect(bytes).toBe(26)
-    expect(store.rootPath).toBeTruthy()
-    expect(path.startsWith(store.rootPath as string)).toBe(true)
-    expect(await pathExists(path)).toBe(true)
-    await store.cleanup()
-    expect(await pathExists(path)).toBe(false)
-  })
-
-  test('cleanup with nothing written is a no-op', async () => {
-    const fresh = new DumpStore()
-    await fresh.cleanup() // no dir created, nothing to delete
-    expect(fresh.rootPath).toBeUndefined()
-  })
-})
-
-describe('sweepStaleDumpDirs', () => {
-  const staleName = `you-dumps-0-rlmtest-stale-${process.pid}`
-  const freshName = `you-dumps-0-rlmtest-fresh-${process.pid}`
-  const ownName = `${DUMP_DIR_PREFIX}rlmtest-own`
-  const stalePath = join(tmpdir(), staleName)
-  const freshPath = join(tmpdir(), freshName)
-  const ownPath = join(tmpdir(), ownName)
-
-  test("removes aged dirs from dead pids; keeps fresh dirs and this process's dirs", async () => {
-    await mkdir(stalePath, { recursive: true })
-    await writeFile(join(stalePath, '001-you-search.md'), 'residue')
-    await mkdir(freshPath, { recursive: true })
-    await mkdir(ownPath, { recursive: true })
-    try {
-      // Age only the stale dir beyond the 24h threshold.
-      await agePath(stalePath, 25 * 60 * 60 * 1000)
-      await sweepStaleDumpDirs()
-      expect(await pathExists(stalePath)).toBe(false)
-      expect(await pathExists(freshPath)).toBe(true)
-      expect(await pathExists(ownPath)).toBe(true)
-    } finally {
-      await rm(stalePath, { recursive: true, force: true })
-      await rm(freshPath, { recursive: true, force: true })
-      await rm(ownPath, { recursive: true, force: true })
-    }
   })
 })
 
