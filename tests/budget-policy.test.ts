@@ -66,7 +66,7 @@ describe('createBudgetTracker.onToolCall', () => {
     const blocked = tracker.onToolCall('you-search')
     expect(blocked?.block).toBe(true)
     expect(blocked?.reason).toContain('Tool budget exhausted (3/3)')
-    expect(blocked?.reason).toContain('ONLY the items that satisfy every criterion')
+    expect(blocked?.reason).toContain('final answer')
   })
 
   test('blocked calls do not consume budget or grace further', () => {
@@ -91,7 +91,6 @@ describe('createBudgetTracker.onToolResult', () => {
     tracker.onToolCall('you-search')
     const r2 = tracker.onToolResult([{ type: 'text', text: 'b' }])
     expect(r2?.content.some((b) => textOf(b).includes('you are 2/4') && textOf(b).includes('halfway'))).toBe(true)
-    expect(r2?.content.some((b) => textOf(b).includes('ONLY the items that satisfy every criterion'))).toBe(true)
     // Fires once only.
     tracker.onToolCall('you-search')
     const r3 = tracker.onToolResult([{ type: 'text', text: 'c' }])
@@ -156,18 +155,18 @@ describe('createBudgetTracker.onToolResult', () => {
 })
 
 describe('hint builders', () => {
-  test('check-in mentions budget state, set completion, and answer filtering', () => {
+  test('check-in mentions budget state, completeness, and answer filtering', () => {
     const hint = buildCheckInHint(5, 10)
     expect(hint).toContain('you are 5/10')
     expect(hint).toContain('halfway of your tool budget')
-    expect(hint).toContain('ONLY the items that satisfy every criterion')
-    expect(hint).toContain('complete the enumeration')
+    expect(hint).toContain('verify you have found every item')
+    expect(hint).toContain('only what the question asks for')
   })
 
-  test('exhausted reason forces the final answer and forbids the candidate dump', () => {
+  test('exhausted reason forces the final answer with hygiene guidance', () => {
     const reason = buildBudgetExhaustedReason(10)
     expect(reason).toContain('Tool budget exhausted (10/10)')
     expect(reason).toContain('final answer')
-    expect(reason).toContain('never the intermediate candidate set')
+    expect(reason).toContain('only what the question asks for')
   })
 })

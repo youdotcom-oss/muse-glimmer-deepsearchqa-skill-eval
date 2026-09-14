@@ -60,8 +60,8 @@ the full_page / repeat-query intercept patterns.
 - **General-purpose port**: make the cap/grace env-configurable or user-settable (the
   machinery is already generic — `createBudgetTracker(maxCalls, maxResultChars, dumpLimit,
   graceLimit)`), and consider replacing the hard block with a softer "answer soon" nudge.
-  The mid-budget check-in hint mentions set-enumeration guidance tuned to DeepSearchQA's
-  set-answer tasks — generalize or drop for other domains.
+  The budget hint texts have been generalized to domain-neutral phrasing (completeness
+  verification + answer hygiene, no set-enumeration or criterion wording).
 
 ### 4. Steering texts tuned to the eval's failure modes
 

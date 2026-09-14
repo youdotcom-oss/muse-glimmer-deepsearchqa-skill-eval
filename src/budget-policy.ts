@@ -34,29 +34,25 @@ export function readMaxToolResultChars(env: Record<string, string | undefined>):
   return Number.isFinite(value) && value >= 100 ? value : 12_000
 }
 
-/** Mid-budget check-in: budget status + set-completion and answer-filter
+/** Mid-budget check-in: budget status + completeness and answer-filter
  * guidance, placed on the midpoint call's result so it lands right before the
  * model drafts its answer (and before the cap for uncapped trials). */
 export function buildCheckInHint(used: number, maxCalls: number): string {
   return (
     `\n\n---\n` +
     `BUDGET CHECK-IN: you are ${used}/${maxCalls} — halfway of your tool budget. ` +
-    `If the question asks for a set, use your remaining budget to complete the enumeration ` +
-    `(verify you have found every item). When you write your final answer, it must list ` +
-    `ONLY the items that satisfy every criterion in the question — never the intermediate candidate set.`
+    `If the question asks for a complete list, use your remaining budget to verify you have found every item. ` +
+    `When you write your final answer, include only what the question asks for — not your intermediate notes.`
   )
 }
 
-/** Cap-block reason: forces the final answer and forbids the candidate-set dump
- * (the P3 failure pattern: trials whose answers contain every correct item plus
- * 4+ extras score 0.58 instead of passing). */
+/** Cap-block reason: forces the final answer with answer-hygiene guidance. */
 export function buildBudgetExhaustedReason(maxCalls: number): string {
   return (
     `Tool budget exhausted (${maxCalls}/${maxCalls}). ` +
     'You have enough evidence to answer. Stop calling tools and write your final answer now. ' +
-    'Your final answer must list ONLY the items that satisfy every criterion in the question — ' +
-    'never the intermediate candidate set. If the question asks for a set, verify you have ' +
-    'found every item, then answer.'
+    'Answer with only what the question asks for — no sources, commentary, or intermediate notes ' +
+    'unless the question requests them.'
   )
 }
 
@@ -72,7 +68,7 @@ export function buildGraceHint(maxCalls: number, graceCalls: number): string {
     `\n\n---\nBUDGET EXTENSION: your base ${maxCalls} calls are spent. You have up to ${graceCalls} additional ` +
     'calls, ONLY to fill the unresolved gaps your extractions flagged — refine a query toward a named gap, ' +
     'or use you-contents on the most promising URL (highlights often lack tabular data). ' +
-    'Then answer with the best-supported facts and list only the items that satisfy every criterion.'
+    'Then answer with the best-supported facts.'
   )
 }
 

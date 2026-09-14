@@ -25,7 +25,7 @@ incomplete, give the best-supported partial answer and mark what remains unknown
 1. Restate the core question and identify the type of answer required (single value, list, comparison, ranking, explanation).
 2. Break the question into 3-5 research items, and for each draft a 3-6 word keyword query (one facet per query — never paste the whole question).
 3. For each item, list the value/source/date to find and the 3-6 word query for it, plus domain/recency/locale filters only if they clearly help.
-4. **Set questions: enumerate the candidate universe first.** For "which countries/municipalities/companies…", list the full class of candidates (all EU members, all Lower Mainland municipalities…), then verify each candidate against the criteria — a checklist beats hoping search reveals the missing items.
+4. **Questions asking for a list or set: enumerate the candidate universe first.** Whenever the answer is "all the X that satisfy Y" — countries, companies, people, products, laws, events, model years, species, files, anything countable — list the full class of plausible candidates first, then verify each against the stated criteria. A checklist beats hoping search reveals the missing items.
 5. Fire the queries for Phase 1's research items together in one parallel batch — the harness runs tool calls concurrently, so a batch costs one round of latency.
 
 ### Phase 2: Investigate
