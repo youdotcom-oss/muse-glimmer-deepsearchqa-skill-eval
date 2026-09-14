@@ -15,8 +15,7 @@ metadata:
 Use `you-search` to discover web sources and `you-contents` to read specific URLs. Search finds candidate sources; reading extracts reliable evidence.
 
 Answer from your extraction results — each one is a sub-model's distilled read of the actual page, with its
-`Unresolved gaps` reporting what the page did NOT answer. Always finish with a non-empty answer; if evidence is
-incomplete, give the best-supported partial answer and mark what remains unknown.
+`Unresolved gaps` reporting what the page did NOT answer.
 
 ## Search Pipeline
 
@@ -35,8 +34,6 @@ incomplete, give the best-supported partial answer and mark what remains unknown
 3. **If incomplete**: refine the query and search again. If the question names a source (e.g., "according to the CDC"), pin its domain inline: `you-search(query="... site:cdc.gov")`.
 4. **If still stuck**: do not reword the same query against the same source — change something structural: a different host class (government portal, data catalogue, the publisher's own site), the underlying dataset (CSV/PDF), or a different facet.
 5. For a purely factual question with no named source, `knowledge: "core"` can return licensed factual answers alongside web results.
-6. Interactive data pages (Tableau dashboards, chart-builder URLs like `/grapher/`) usually hide their data behind rendering — when a read comes back thin, prefer the underlying report, dataset, or publisher page over the dashboard.
-7. The harness enforces your tool budget and will tell you when to close gaps and answer — pace your research in parallel batches. Never finish with an empty response.
 
 ### Phase 3: Verify
 
@@ -51,6 +48,7 @@ incomplete, give the best-supported partial answer and mark what remains unknown
 2. Answer with ONLY the requested items. No URLs, citations, source lists, file references, or supporting commentary unless the question explicitly asks for them.
 3. Obey the question's negative constraints (e.g. "do not list any other information") literally — extra content is penalized even when the items are correct.
 4. Sources go in the answer only when the question asks for them.
+5. Never finish with an empty response.
 
 ### Phase 5: Gap accountability (before answering)
 
@@ -73,13 +71,6 @@ incomplete, give the best-supported partial answer and mark what remains unknown
 - For multi-year or historical data, fetch each year's report separately — never rely on one aggregated source that may reprint different data.
 - Do NOT use `freshness` for historical questions; it biases toward recent pages and buries the original report.
 - If a publisher is identifiable from the query, pin it with an inline `site:` operator even if the user did not name it explicitly.
-
-## Tool Budget and Recovery
-
-- The harness enforces your tool budget; when a budget warning or BUDGET EXTENSION note appears, spend remaining
-  calls ONLY to fill unresolved gaps from your extractions, then answer.
-- If you have not found a complete answer and your budget is nearly spent, synthesize the best partial answer.
-- Never finish with an empty response.
 
 ## Output Format
 
