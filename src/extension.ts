@@ -17,12 +17,15 @@ import {
   formatStructuredExtraction,
   isEmptySearchResult,
   isFullPageSearch,
+  isInteractiveDataUrl,
   narrowToGoal,
   parseExtractionContract,
   QueryDeduper,
   RLM_CONFIG,
   runChunkedExtraction,
   type SubCall,
+  scanInteractiveHtml,
+  shouldRetryWithHtml,
   sweepStaleDumpDirs,
 } from './rlm.ts'
 
@@ -198,11 +201,21 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
           content: [{ type: 'text', text: `[RLM] distilling ${rawText.length} chars in an isolated sub-call...` }],
           details: {},
         })
+        // Conditional HTML retry (you-contents only): interactive-data pages
+        // (Tableau, /grapher/) sometimes expose the chart's backing data in the
+        // HTML DOM — gated below after the first read.
         try {
           // One sub-call per tool call wherever possible: single call when the
           // raw result fits one chunk; deterministic goal-narrowing to keep it
           // a single call for giants; bounded chunk+map only when narrowing
           // finds nothing.
+          const thinAfterFirst = async (c: ReturnType<typeof parseExtractionContract>): Promise<boolean> => {
+            const urls = ((mcpArgs as Record<string, unknown>).urls as string[] | undefined) ?? []
+            const interactive = urls.some((u) => typeof u === 'string' && isInteractiveDataUrl(u))
+            const goalStatus = c.ok ? c.contract.goal_status : undefined
+            const factCount = c.ok ? c.contract.facts.length : 0
+            return shouldRetryWithHtml(goalStatus, factCount, interactive)
+          }
           const goalEffective = goal ?? EXTRACTION_DEFAULT_GOAL
           let extractionInput = rawText
           let mode: 'single' | 'narrowed' | 'chunked' = 'single'
@@ -226,7 +239,49 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
           // Structured contract: JSON in, lean facts + gaps out. A parse
           // failure degrades to prose extraction (the pre-contract behavior);
           // it must never discard the result the call already paid for.
-          const contract = parseExtractionContract(outcome.text)
+          let contract = parseExtractionContract(outcome.text)
+          // Conditional HTML retry for interactive pages: one extra read.
+          if (await thinAfterFirst(contract)) {
+            onUpdate?.({
+              content: [{ type: 'text', text: '[RLM] thin extraction — retrying with html format...' }],
+              details: {},
+            })
+            try {
+              const retryResult = await callTool(tool.name, { ...mcpArgs, formats: ['html'] })
+              const retryAdapted = toToolResult(retryResult)
+              if (!retryResult.isError) {
+                const retryText = retryAdapted.content.map((block) => block.text).join('\n')
+                if (!isEmptySearchResult(retryAdapted.details) && retryText.length > 0) {
+                  // Pre-scan: keep tables/data islands only — raw HTML would
+                  // waste the sub-call window on markup.
+                  const scanned = scanInteractiveHtml(retryText)
+                  const retryDump = await store.write(tool.name, scanned)
+                  const retryOutcome = await runChunkedExtraction(
+                    makeSubCall(ctx, signal),
+                    scanned,
+                    goalEffective,
+                    RLM_CONFIG,
+                  )
+                  const retryContract = parseExtractionContract(retryOutcome.text)
+                  const retryFacts = retryContract.ok ? retryContract.contract.facts.length : 0
+                  const firstFacts = contract.ok ? contract.contract.facts.length : 0
+                  if (retryFacts > firstFacts) {
+                    contract = retryContract.ok ? retryContract : contract
+                    dump.path = retryDump.path
+                    // The html read wins: re-render below with its text.
+                    outcome.text = retryOutcome.text
+                    outcome.chunks = retryOutcome.chunks
+                    outcome.usage.input += retryOutcome.usage.input
+                    outcome.usage.output += retryOutcome.usage.output
+                    outcome.usage.totalTokens += retryOutcome.usage.totalTokens
+                    outcome.usage.cost.total += retryOutcome.usage.cost.total
+                  }
+                }
+              }
+            } catch {
+              // Retry is best-effort; the first read remains the result.
+            }
+          }
           const extractedText = contract.ok ? formatStructuredExtraction(contract.contract) : outcome.text
           return {
             content: [

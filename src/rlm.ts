@@ -173,7 +173,61 @@ export function formatStructuredExtraction(contract: ExtractionContract): string
   return [head, facts].filter((part) => part.length > 0).join('\n') + gaps
 }
 
-/** Query-thrashing intercept: normalize for exact-repeat detection (case and
+/** Interactive-data pages: dashboards and chart builders whose backing data
+ * rarely survives a text crawl. Direct data files (.csv) and binary documents
+ * (.pdf/.xlsx) are excluded — HTML cannot help either class. */
+export function isInteractiveDataUrl(url: string): boolean {
+  if (/\.(csv|pdf|xlsx?|zip)($|[?#])/i.test(url)) return false
+  return /tableau\.com|\/grapher\/|dashboard|powerbi\.com|data\.studio|lookerstudio|flourish/i.test(url)
+}
+
+/** Conditional HTML retry gate: the extraction was thin (goal not found, or
+ * zero facts) AND the page is the interactive class where the HTML DOM
+ * sometimes embeds the chart's backing data. Markdown stays the default. */
+export function shouldRetryWithHtml(goalStatus: string | undefined, factCount: number, interactive: boolean): boolean {
+  if (!interactive) return false
+  if (goalStatus === 'not_found') return true
+  if (factCount === 0) return true
+  return false
+}
+
+/**
+ * Pre-scan an interactive page's HTML before distillation: keep only the
+ * regions where backing data lives (tables, JSON data islands), dropping
+ * markup/boilerplate that would waste the sub-call's window. Synchronous
+ * regex-based region extraction — deterministic and allocation-light. Falls
+ * back to tag-stripped text when a page has neither tables nor data islands.
+ */
+export function scanInteractiveHtml(html: string): string {
+  const limited = html.length > 400_000 ? html.slice(0, 400_000) : html
+  const collected: string[] = []
+  // JSON data islands: chart libraries embed backing data as script JSON.
+  for (const m of limited.matchAll(/<script[^>]*type="application\/(?:json|ld\+json)"[^>]*>([\s\S]*?)<\/script>/gi)) {
+    if (m[1] && m[1].trim().length > 0) collected.push(m[1].trim())
+  }
+  // Tables: strip cell tags, keep row text with cell separators.
+  for (const m of limited.matchAll(/<table[\s\S]*?<\/table>/gi)) {
+    const cells = (m[0].match(/<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi) ?? []).map((cell) =>
+      cell
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    if (cells.length > 0) collected.push(cells.join(' | '))
+  }
+  if (collected.length === 0) {
+    // Fallback: tag-stripped page text (rare for interactive pages, keeps the
+    // retry path total).
+    return limited
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+  }
+  return collected.join('\n')
+}
+
+/** Query-thrashing intercept: normalize for exact-repeat detection (case and (case and
  * whitespace only — punctuation differences still count as distinct). */
 export function normalizeQuery(query: string): string {
   return query
