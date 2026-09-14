@@ -192,6 +192,17 @@ The Skill text asks the model to stay within ~10 tool calls, but smaller or less
 
 Both knobs are env-configurable for A/B testing (e.g. `MAX_TOOL_CALLS=10` reproduces the original cap), and the analysis queries in `analysis/README.md` measure the failure-pattern buckets (fully incorrect / incomplete set / extraneous) these levers target.
 
+## Porting this skill to a general pi package
+
+The extension + skill here are tuned for benchmark grading. `docs/eval-adaptations.md`
+catalogs every eval-specific behavior — answer-format suppression (citations/URLs held out
+of final answers because the official rater penalizes extra items), dump-path suppression
+in extraction results, budget/grace/dedup machinery, model-tuned constants — and what to
+re-enable when porting to a real pi package (restore inline citations + a Sources section,
+re-expose the scoped `read-dump`/`grep-dump` re-inspection tools, derive chunk sizing from
+the active model's context window). The RLM core — distillation sub-calls, goal-grep
+narrowing, steering intercepts, contract salvage — is domain-neutral and ports unchanged.
+
 ## License
 
 MIT.
