@@ -104,7 +104,31 @@ Progress across the three configurations evaluated on this model (all 900 tasks,
 
 Observations for this model, not cross-model conclusions: the A/B-validated levers (15-call budget, high thinking) plus per-result truncation eliminated the trial-death tiers — 99.8% of trials now complete and produce an answer, up from 62.8% in the first run. The remaining failures are almost entirely answer-quality, not harness: fully incorrect 612 (final-step reasoning — barely movable by budget or thinking per the A/B buckets), incomplete set enumeration 374, correct-but-extraneous 131. The next frontier is the model itself or a stronger reasoning/synthesis loop, not harness mechanics.
 
-### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
+### 50-task sample re-run — 2026-09-14 (RLM v4: HTML retry + cleaned-document scan + generalized skill)
+
+Same 50 tasks; changes since v2: semantic query dedup, zero-result passthrough, server-rejection
+unbilling, conditional HTML retry for interactive pages (thin read -> html re-fetch -> body-only
+attribute-stripped scan via streaming rewriter -> re-distill, keep the better), skill generalized
+(dataset residue stripped) and stripped of non-actionable mechanics per audit.
+
+| | RLM v2 | **RLM v4** |
+| --- | --- | --- |
+| Avg F1 (raw) | **0.7603** | 0.7122 |
+| Pass (Fully Correct) | 0.58 | 0.52 |
+| Latency / trial | 242s | **214s** |
+| Cost / trial | $0.092 | $0.092 |
+| Contract JSON | 98% | 98% (763/781) |
+| Extraction density | 4.3% | **1.8%** (92.3M raw -> 1.64M to root) |
+| HTML retries | — | 0 fired (interactive URLs rare in this sample) |
+
+Paired vs v2: +5 gains (incl. former refusers 13/21 again, plus 25/44/45) / −8 regressions. With v3's
+0.6989, three same-config-family samples give 0.70-0.76 — a ±3-task run-to-run band at n=50 K=1 that now
+exceeds any single lever's effect. Dedup blocks 220 (v3: 270), grace used 86. Sample iteration has hit
+its resolution floor; the discriminating experiment is the full 900x3 run on one config. v2's config is
+the recorded leader; the HTML retry is kept as correct-by-construction (0 fired here but free when a
+dashboard does appear).
+
+### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
 
 Same 50 tasks; changes since v2: Jaccard paraphrase dedup (>=0.8), zero-result passthrough
 (server retry guidance reaches the root), server-rejection unbilling, skill enumeration
