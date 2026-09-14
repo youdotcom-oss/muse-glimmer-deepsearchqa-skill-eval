@@ -26,13 +26,39 @@ describe('readMaxToolResultChars', () => {
   })
 })
 
+describe('dump-tool side budget', () => {
+  test('read-dump/grep-dump do not consume the search budget and get their own smaller cap', () => {
+    const tracker = createBudgetTracker(3, 12_000)
+    for (const name of ['read-dump', 'grep-dump', 'read-dump', 'grep-dump', 'read-dump', 'grep-dump']) {
+      expect(tracker.onToolCall(name)).toBeUndefined()
+    }
+    // Search budget untouched by the six inspection calls.
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-contents')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-contents')?.block).toBe(true)
+    // Dump side budget now exhausted.
+    const blocked = tracker.onToolCall('read-dump')
+    expect(blocked?.block).toBe(true)
+    expect(blocked?.reason).toContain('Inspection budget exhausted (6/6)')
+    expect(blocked?.reason).toContain('final answer')
+  })
+
+  test('blocked dump calls do not consume further; dump cap defaults to 6', () => {
+    const tracker = createBudgetTracker(15, 12_000)
+    for (let i = 0; i < 6; i += 1) expect(tracker.onToolCall('grep-dump')).toBeUndefined()
+    expect(tracker.onToolCall('grep-dump')?.block).toBe(true)
+    expect(tracker.onToolCall('read-dump')?.block).toBe(true)
+  })
+})
+
 describe('createBudgetTracker.onToolCall', () => {
   test('allows calls up to the cap, then blocks with the P3-filter reason', () => {
     const tracker = createBudgetTracker(3, 12_000)
-    expect(tracker.onToolCall()).toBeUndefined()
-    expect(tracker.onToolCall()).toBeUndefined()
-    expect(tracker.onToolCall()).toBeUndefined()
-    const blocked = tracker.onToolCall()
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    const blocked = tracker.onToolCall('you-search')
     expect(blocked?.block).toBe(true)
     expect(blocked?.reason).toContain('Tool budget exhausted (3/3)')
     expect(blocked?.reason).toContain('ONLY the items that satisfy every criterion')
@@ -40,9 +66,9 @@ describe('createBudgetTracker.onToolCall', () => {
 
   test('blocked calls do not consume budget further', () => {
     const tracker = createBudgetTracker(1, 12_000)
-    expect(tracker.onToolCall()).toBeUndefined()
-    expect(tracker.onToolCall()?.block).toBe(true)
-    expect(tracker.onToolCall()?.block).toBe(true)
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')?.block).toBe(true)
+    expect(tracker.onToolCall('you-search')?.block).toBe(true)
   })
 })
 
@@ -50,15 +76,15 @@ describe('createBudgetTracker.onToolResult', () => {
   test('fires the mid-budget check-in exactly once, on the midpoint result', () => {
     const tracker = createBudgetTracker(4, 12_000)
     // midpoint = ceil(4/2) = 2: the check-in rides the 2nd call's result.
-    tracker.onToolCall()
+    tracker.onToolCall('you-search')
     const r1 = tracker.onToolResult([{ type: 'text', text: 'a' }])
     expect(r1?.content.some((b) => textOf(b).includes('halfway')) ?? false).toBe(false)
-    tracker.onToolCall()
+    tracker.onToolCall('you-search')
     const r2 = tracker.onToolResult([{ type: 'text', text: 'b' }])
     expect(r2?.content.some((b) => textOf(b).includes('you are 2/4') && textOf(b).includes('halfway'))).toBe(true)
     expect(r2?.content.some((b) => textOf(b).includes('ONLY the items that satisfy every criterion'))).toBe(true)
     // Fires once only.
-    tracker.onToolCall()
+    tracker.onToolCall('you-search')
     const r3 = tracker.onToolResult([{ type: 'text', text: 'c' }])
     expect(r3?.content.some((b) => textOf(b).includes('halfway')) ?? false).toBe(false)
   })
@@ -80,7 +106,7 @@ describe('createBudgetTracker.onToolResult', () => {
 
   test('passes non-text blocks through untouched', () => {
     const tracker = createBudgetTracker(2, 1_000)
-    tracker.onToolCall()
+    tracker.onToolCall('you-search')
     // midpoint = 1: hint fires on this result, image block must survive.
     const r = tracker.onToolResult([
       { type: 'image', data: 'base64' },

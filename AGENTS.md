@@ -12,7 +12,8 @@
 - `MODEL` is required by `generate`, `grade`, and the adapter; there is no default model. Example: `MODEL=openai/gpt-5-mini bun run eval`.
 - The dataset is fixed to `google/deepsearchqa` by default; treat changing it as a template fork, not a per-run knob.
 - Start with the one-question smoke from the README before any full run. `FORCE=1` clears prior artifacts; without it, `generate` and `grade` resume from existing `data/` files.
-- Do not edit committed evaluation code to chase a bad run's results; record run context (model, thinking level, date, skill version) in the README results section instead.
+- Harness changes land directly on `main`. The baseline is established: two full 900-task, K=3 runs for `meta/muse-glimmer-30b` are recorded in `README.md` commit history (`8ffe5a7`: F1 0.5341 / pass@K 66.78%; `7abefbf` cap15+high+truncation: F1 0.6653 / pass@K 71.22%). Experiment branches are optional overhead, not required process.
+- Comparability rules still apply: never edit code mid-run to chase a live bad run, keep each full run on a single committed state, and record run context (model, thinking level, date, skill/harness version, commit) in the README results section so every new number can be compared against those baselines. Results tables are append-only — do not rewrite or delete prior run rows.
 
 ## Reporting workflow (analysis -> README)
 

@@ -60,14 +60,30 @@ export function buildBudgetExhaustedReason(maxCalls: number): string {
   )
 }
 
+/** Dump-inspection tools (read-dump/grep-dump) ride on a small side budget
+ * instead of the search cap: they are the re-inspection fallback for RLM
+ * extraction, and taxing them against the A/B-validated search budget would
+ * convert re-inspection needs into incomplete-set failures. 6 calls is ample
+ * headroom for the grep -> read -> read pattern while bounding a loop. */
+export const DUMP_TOOL_CALL_LIMIT = 6
+const DUMP_TOOLS = new Set(['read-dump', 'grep-dump'])
+
+export function buildDumpBudgetExhaustedReason(limit: number): string {
+  return (
+    `Inspection budget exhausted (${limit}/${limit}). ` +
+    'Stop re-reading dump files and write your final answer now with the evidence you have.'
+  )
+}
+
 export function truncateText(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text
   return `${text.slice(0, maxChars)}\n\n…[truncated: ${text.length - maxChars} chars omitted]`
 }
 
 export interface BudgetTracker {
-  /** Returns the block result when the call exceeds the budget. */
-  onToolCall(): { block: true; reason: string } | undefined
+  /** Returns the block result when the call exceeds its budget: the main cap
+   * for search tools, the small side cap for dump-inspection tools. */
+  onToolCall(toolName: string): { block: true; reason: string } | undefined
   /** Truncates oversized text blocks and, at the budget midpoint, appends the
    * check-in hint once. Returns the mutated content, or undefined when
    * unchanged. Non-text blocks pass through untouched. Generic so pi's own
@@ -79,12 +95,22 @@ function isOversizedText(block: ContentBlock, maxChars: number): block is Conten
   return block.type === 'text' && typeof block.text === 'string' && block.text.length > maxChars
 }
 
-export function createBudgetTracker(maxCalls: number, maxResultChars: number): BudgetTracker {
+export function createBudgetTracker(
+  maxCalls: number,
+  maxResultChars: number,
+  dumpLimit: number = DUMP_TOOL_CALL_LIMIT,
+): BudgetTracker {
   let callsUsed = 0
+  let dumpCallsUsed = 0
   let checkInPending = false
   const midpoint = Math.ceil(maxCalls / 2)
   return {
-    onToolCall() {
+    onToolCall(toolName: string) {
+      if (DUMP_TOOLS.has(toolName)) {
+        if (dumpCallsUsed >= dumpLimit) return { block: true, reason: buildDumpBudgetExhaustedReason(dumpLimit) }
+        dumpCallsUsed += 1
+        return undefined
+      }
       if (callsUsed >= maxCalls) return { block: true, reason: buildBudgetExhaustedReason(maxCalls) }
       callsUsed += 1
       if (callsUsed === midpoint) checkInPending = true

@@ -1,8 +1,24 @@
-/** You.com MCP bridge for Pi, registering dash-cased `you-search` and `you-contents`. */
-import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent'
+/** You.com MCP bridge for Pi: dash-cased `you-search` and `you-contents` with RLM-style
+ * depth-1 extraction built in. Root-facing surface stays exactly the two pre-work tools;
+ * all heavy-content machinery (internal dumps, deterministic goal grep, distillation
+ * sub-calls) lives inside the tools. full_page attempts on you-search are intercepted
+ * at the tool_call hook with a budget-free steering note. */
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { type CallToolResult, Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { type TSchema, Type } from 'typebox'
 import { createBudgetTracker, readMaxToolCalls, readMaxToolResultChars } from './budget-policy.ts'
+import {
+  DumpStore,
+  FULL_PAGE_STEERING_NOTE,
+  formatExtractionFallback,
+  formatExtractionSuccess,
+  isFullPageSearch,
+  narrowToGoal,
+  RLM_CONFIG,
+  runChunkedExtraction,
+  type SubCall,
+  sweepStaleDumpDirs,
+} from './rlm.ts'
 
 const MCP_URL = 'https://api.you.com/mcp?tools=you-search,you-contents'
 const CLIENT_INFO = { name: 'deepsearchqa-skill-eval', version: '0.0.0' } as const
@@ -81,22 +97,152 @@ function toToolResult(result: CallToolResult): { content: { type: 'text'; text: 
   return { content, details: (result.structuredContent ?? {}) as unknown }
 }
 
-function buildToolDefinition(tool: DiscoveredTool): ToolDefinition {
+const EXTRACTION_DEFAULT_GOAL =
+  "Extract the facts, names, dates, URLs, figures, and conclusions relevant to the user's research question."
+
+/** Depth-1 RLM sub-call: an isolated, tool-less completion over the same
+ * provider/model as the parent session. The raw document arrives inline; the
+ * worker has no tools and no filesystem access, so crawled content cannot
+ * trigger actions — it can only shape its own extraction. */
+function makeSubCall(ctx: ExtensionContext, signal: AbortSignal | undefined): SubCall {
+  return async (systemPrompt, userText) => {
+    const model = ctx.model
+    if (!model) throw new Error('no active model for the extraction sub-call')
+    const response = await ctx.modelRegistry.complete(
+      model,
+      {
+        systemPrompt,
+        messages: [{ role: 'user', content: [{ type: 'text', text: userText }], timestamp: Date.now() }],
+      },
+      { signal },
+    )
+    if (response.stopReason === 'error' || response.errorMessage) {
+      throw new Error(response.errorMessage ?? `sub-call stopReason ${response.stopReason}`)
+    }
+    const text = response.content
+      .filter((part) => part.type === 'text')
+      .map((part) => (part as { text: string }).text)
+      .join('\n')
+    return { text, usage: response.usage }
+  }
+}
+
+function extendedParameters(tool: DiscoveredTool): TSchema {
+  const base = (tool.inputSchema ?? ANY_OBJECT) as Record<string, unknown>
+  const properties = (base.properties ?? {}) as Record<string, unknown>
+  return {
+    ...base,
+    properties: {
+      ...properties,
+      extraction_goal: {
+        type: 'string',
+        description:
+          'Optional. What to look for in the result. Oversized raw results are distilled by an isolated sub-model ' +
+          'in its own context; only the extraction enters your context window.',
+      },
+    },
+  } as unknown as TSchema
+}
+
+function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore): ToolDefinition {
   return {
     name: tool.name,
     label: tool.name,
-    description: tool.description ?? `Call ${tool.name} on the You.com MCP server.`,
-    parameters: (tool.inputSchema ?? ANY_OBJECT) as unknown as TSchema,
-    async execute(_toolCallId, params, signal) {
+    description:
+      (tool.description ?? `Call ${tool.name} on the You.com MCP server.`) +
+      (tool.name === 'you-search'
+        ? ' Returns highlight excerpts per result. For an in-depth read of a single page, identify the most promising result and call you-contents with its URL.'
+        : ''),
+    parameters: extendedParameters(tool),
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       if (signal?.aborted) throw new Error('You.com MCP call was cancelled')
+      const { extraction_goal, ...mcpArgs } = params as Record<string, unknown>
+      // Defensive: the tool_call hook steers full_page away; this guarantees
+      // you-search MCP calls are highlights even if one slips through.
+      if (tool.name === 'you-search') delete (mcpArgs as Record<string, unknown>).extraction
       try {
-        const result = await callTool(tool.name, params as Record<string, unknown>)
+        const result = await callTool(tool.name, mcpArgs)
         const adapted = toToolResult(result)
-        if (!result.isError) return adapted
-        const errorText = adapted.content.length
-          ? adapted.content.map((block) => block.text).join('\n')
-          : `${tool.name} reported an error`
-        return { content: [{ type: 'text', text: `Error: ${errorText}` }], details: { error: true } }
+        if (result.isError) {
+          const errorText = adapted.content.length
+            ? adapted.content.map((block) => block.text).join('\n')
+            : `${tool.name} reported an error`
+          return { content: [{ type: 'text', text: `Error: ${errorText}` }], details: { error: true } }
+        }
+
+        const rawText = adapted.content.map((block) => block.text).join('\n')
+        const goal = typeof extraction_goal === 'string' && extraction_goal.trim() ? extraction_goal.trim() : undefined
+        const shouldExtract = ctx.model && (goal !== undefined || rawText.length > RLM_CONFIG.minChars)
+        if (!shouldExtract) return adapted
+
+        const store = getDumpStore()
+        const dump = await store.write(tool.name, rawText)
+        onUpdate?.({
+          content: [{ type: 'text', text: `[RLM] distilling ${rawText.length} chars in an isolated sub-call...` }],
+          details: {},
+        })
+        try {
+          // One sub-call per tool call wherever possible: single call when the
+          // raw result fits one chunk; deterministic goal-narrowing to keep it
+          // a single call for giants; bounded chunk+map only when narrowing
+          // finds nothing.
+          const goalEffective = goal ?? EXTRACTION_DEFAULT_GOAL
+          let extractionInput = rawText
+          let mode: 'single' | 'narrowed' | 'chunked' = 'single'
+          let narrowedRegions: number | undefined
+          if (rawText.length > RLM_CONFIG.chunkChars) {
+            const narrowed = narrowToGoal(rawText, goalEffective, RLM_CONFIG.chunkChars)
+            if (narrowed) {
+              extractionInput = narrowed.text
+              narrowedRegions = narrowed.matchedRegions
+              mode = 'narrowed'
+            } else {
+              mode = 'chunked'
+            }
+          }
+          const outcome = await runChunkedExtraction(
+            makeSubCall(ctx, signal),
+            extractionInput,
+            goalEffective,
+            RLM_CONFIG,
+          )
+          return {
+            content: [
+              {
+                type: 'text',
+                text: formatExtractionSuccess(
+                  dump.path,
+                  rawText.length,
+                  outcome.chunks,
+                  outcome.text,
+                  outcome.truncatedToChunks,
+                ),
+              },
+            ],
+            details: {
+              ...(typeof adapted.details === 'object' && adapted.details !== null ? adapted.details : {}),
+              rlm: {
+                mode,
+                chunks: outcome.chunks,
+                originalLength: rawText.length,
+                extractedLength: outcome.text.length,
+                truncated: outcome.truncatedToChunks,
+                narrowedRegions,
+                dumpPath: dump.path,
+              },
+            },
+            usage: outcome.usage,
+          }
+        } catch (error) {
+          // Extraction failure must degrade to raw text (the budget-policy
+          // truncation hook caps it), never to a tool error that discards
+          // results the call already paid for.
+          const message = error instanceof Error ? error.message : String(error)
+          return {
+            content: [{ type: 'text', text: formatExtractionFallback(dump.path, rawText.length, message, rawText) }],
+            details: { rlmError: message, dumpPath: dump.path },
+          }
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         return {
@@ -109,18 +255,42 @@ function buildToolDefinition(tool: DiscoveredTool): ToolDefinition {
 }
 
 export default async function youToolsExtension(pi: ExtensionAPI): Promise<void> {
-  const tools = await discoverTools()
-  for (const tool of tools) pi.registerTool(buildToolDefinition(tool))
+  let dumpStore: DumpStore | undefined
+  function getDumpStore(): DumpStore {
+    dumpStore ??= new DumpStore()
+    return dumpStore
+  }
 
+  const tools = await discoverTools()
+  for (const tool of tools) pi.registerTool(buildToolDefinition(tool, getDumpStore))
+
+  // Sweep crash residue (SIGKILL'd runs) from other pids; this process's dir
+  // and fresh dirs from concurrent live runs are never touched.
+  pi.on('session_start', () => {
+    void sweepStaleDumpDirs()
+  })
+
+  // full_page steering: intercept BEFORE budget counting. The attempt is
+  // blocked with the identify->extract note as the reason — it never leaves
+  // the local loop (no MCP call, no sub-inference) and, like every block,
+  // consumes no budget. See src/budget-policy.ts and src/rlm.ts.
   // Budget policy: hard cap (MAX_TOOL_CALLS, default 15) with an answer-forcing
   // block reason; one-time mid-budget check-in hint; per-result truncation
   // (MAX_TOOL_RESULT_CHARS, default 12000) so accumulated tool content cannot
-  // push the model past its context window. See src/budget-policy.ts.
+  // push the model past its context window. RLM extraction runs on the raw
+  // text before this hook; truncation remains the floor when extraction
+  // fails. See src/budget-policy.ts and src/rlm.ts.
   const tracker = createBudgetTracker(readMaxToolCalls(process.env), readMaxToolResultChars(process.env))
-  pi.on('tool_call', () => tracker.onToolCall())
+  pi.on('tool_call', (event) => {
+    if (isFullPageSearch(event.toolName, event.input)) {
+      return { block: true, reason: FULL_PAGE_STEERING_NOTE }
+    }
+    return tracker.onToolCall(event.toolName)
+  })
   pi.on('tool_result', (event) => tracker.onToolResult(event.content))
 
   pi.on('session_shutdown', () => {
+    void dumpStore?.cleanup()
     void closeSharedClient()
   })
 }
