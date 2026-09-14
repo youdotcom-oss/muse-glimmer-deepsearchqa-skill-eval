@@ -1,5 +1,6 @@
 import { dirname } from 'node:path'
 import { readIntegerEnv, readStringEnv } from '../src/env.ts'
+import { fetchWithRetry } from '../src/http-retry.ts'
 import { ensureDir, writeJsonl } from '../src/io.ts'
 
 interface DatasetRowEnvelope {
@@ -49,7 +50,9 @@ async function fetchRows(offset: number, length: number): Promise<RowsResponse> 
   url.searchParams.set('split', SPLIT)
   url.searchParams.set('offset', String(offset))
   url.searchParams.set('length', String(length))
-  const res = await fetch(url)
+  // datasets-server intermittently 502s mid-pagination; a 5xx here used to
+  // kill a multi-hour eval at the scaffold step. Retry transient failures.
+  const res = await fetchWithRetry(() => fetch(url), { baseDelayMs: 2_000 })
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status} ${await res.text()}`)
   return (await res.json()) as RowsResponse
 }
