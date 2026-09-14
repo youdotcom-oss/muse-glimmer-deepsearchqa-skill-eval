@@ -104,7 +104,35 @@ Progress across the three configurations evaluated on this model (all 900 tasks,
 
 Observations for this model, not cross-model conclusions: the A/B-validated levers (15-call budget, high thinking) plus per-result truncation eliminated the trial-death tiers — 99.8% of trials now complete and produce an answer, up from 62.8% in the first run. The remaining failures are almost entirely answer-quality, not harness: fully incorrect 612 (final-step reasoning — barely movable by budget or thinking per the A/B buckets), incomplete set enumeration 374, correct-but-extraneous 131. The next frontier is the model itself or a stronger reasoning/synthesis loop, not harness mechanics.
 
-### 50-task sample re-run — 2026-09-14 (RLM v2: contract fixes + grader alignment + skill v2)
+### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
+
+Same 50 tasks; changes since v2: Jaccard paraphrase dedup (>=0.8), zero-result passthrough
+(server retry guidance reaches the root), server-rejection unbilling, skill enumeration
+protocol + structural-change-over-rewording + interactive-data awareness, dataset-derived
+residue stripped from skill/policy texts.
+
+| | RLM v2 | **RLM v3** |
+| --- | --- | --- |
+| Avg F1 (raw, primary metric) | **0.7603** | 0.6989 |
+| Pass (Fully Correct) | 0.58 | 0.52 |
+| Latency / trial | 242s | **205s** |
+| Cost / trial | $0.092 | **$0.088** |
+| Contract JSON rate | 98% | 98% |
+| Dedup blocks | 0 | 270 (80 grace hints) |
+
+v3 result: **regression, within run-to-run variance band.** Paired vs v2: +3 gains (incl. two
+former zero-progress refusers, 13 and 21 — gap accountability working) but −6 losses, three of
+which collapsed to near-zero with plausible-looking research trajectories (New Zealand vs
+Australia country-selection error; PDF-only sources unreachable by text crawl). Dedup blocked
+270 attempts, and failing trials still averaged more calls than passes — the dedup redirected
+effort but did not convert it into better sources. Reads: (a) 50-task K=1 variance is large
+(±3-6 tasks per re-run observed across v1/v2/v3 pairs); (b) semantic dedup may cost useful
+reformulations at 0.8 threshold; (c) the dominant failure tier (unreachable PDFs/data portals,
+JS-rendered data) needs capabilities the text-crawl surface cannot provide. No config change
+from this single run alone; the honest next step is a full-run decision on the best recorded
+config (v2 by mean, v3 by latency/cost) with the new judge + FC metric.
+
+### 50-task sample re-run — 2026-09-14 (RLM v2: contract fixes + grader alignment + skill v2)### 50-task sample re-run — 2026-09-14 (RLM v2: contract fixes + grader alignment + skill v2)
 
 Same 50 tasks as the first RLM sample; changes: extraction facts capped at 10, output cap 1,800,
 truncated-contract salvage, merge-prompt contract, markdown formats pin, dump-path suppression, 4-call
