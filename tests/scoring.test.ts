@@ -270,6 +270,33 @@ describe('You.com cost estimation', () => {
     expect(cost.costUsd).toBe(0)
   })
 
+  test('server-rejected calls (isError result) are not billed — they never reached the API', () => {
+    // Server-side validation (e.g. query empty after normalizing operators,
+    // schema violations) returns isError:true without calling the Search API.
+    const cost = estimateYouApiUsage([
+      {
+        type: 'tool_call',
+        name: 'you-search',
+        status: 'started',
+        input: { query: 'site:ourworldindata.org' },
+        metadata: { toolCallId: 'e1' },
+      },
+      {
+        type: 'tool_call',
+        name: 'you-search',
+        status: 'completed',
+        input: null,
+        output: {
+          content: [{ type: 'text', text: 'Error: Query is empty after normalizing search operators.' }],
+          details: { error: true },
+        },
+        metadata: { toolCallId: 'e1' },
+      },
+    ])
+    expect(cost.searchCalls).toBe(0)
+    expect(cost.costUsd).toBe(0)
+  })
+
   test('completed events carry no input — contents URLs come from the started sibling by toolCallId', () => {
     const cost = estimateYouApiUsage([
       {

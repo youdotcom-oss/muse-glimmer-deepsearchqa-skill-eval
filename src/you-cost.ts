@@ -26,6 +26,7 @@ export function estimateYouApiUsage(events: ReadonlyArray<Record<string, unknown
     input: JsonObject | undefined
     output: JsonObject | undefined
     completed: boolean
+    billed: boolean
   }
   const calls = new Map<string, CallRecord>()
   for (const event of events) {
@@ -38,12 +39,19 @@ export function estimateYouApiUsage(events: ReadonlyArray<Record<string, unknown
       input: undefined,
       output: undefined,
       completed: false,
+      billed: true,
     }
     const input = asObject(event.input)
     if (input) record.input = input
     if (event.status === 'completed') {
       record.completed = true
       record.output = asObject(event.output)
+      // Tool-level errors (MCP isError results — server-side validation
+      // rejections, API failures) resolved without billable content: the
+      // extension normalizes them into a details.error marker, and
+      // API-failure paths carry no results. Mark them unbilled.
+      const details = asObject(record.output?.details)
+      if (details?.error === true) record.billed = false
     }
     calls.set(key, record)
   }
@@ -54,7 +62,7 @@ export function estimateYouApiUsage(events: ReadonlyArray<Record<string, unknown
   let contentsPages = 0
 
   for (const record of calls.values()) {
-    if (!record.completed) continue
+    if (!record.completed || record.billed === false) continue
 
     if (isYouSearch(record.name)) {
       searchCalls += 1

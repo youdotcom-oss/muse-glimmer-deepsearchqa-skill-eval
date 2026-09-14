@@ -15,6 +15,7 @@ import {
   formatExtractionFallback,
   formatExtractionSuccess,
   formatStructuredExtraction,
+  isEmptySearchResult,
   isFullPageSearch,
   narrowToGoal,
   parseExtractionContract,
@@ -183,6 +184,10 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
         }
 
         const rawText = adapted.content.map((block) => block.text).join('\n')
+        // Zero-result payloads carry the server's retry guidance (a second
+        // text block) written for the ROOT — distilling it into the extraction
+        // contract would eat the steering. Tiny + pre-structured: pass through.
+        if (tool.name === 'you-search' && isEmptySearchResult(adapted.details)) return adapted
         const goal = typeof extraction_goal === 'string' && extraction_goal.trim() ? extraction_goal.trim() : undefined
         const shouldExtract = ctx.model && (goal !== undefined || rawText.length > RLM_CONFIG.minChars)
         if (!shouldExtract) return adapted
@@ -307,8 +312,8 @@ export default async function youToolsExtension(pi: ExtensionAPI): Promise<void>
     if (event.toolName === 'you-search') {
       const query = (event.input as { query?: unknown } | undefined)?.query
       if (typeof query === 'string' && query.trim().length > 0) {
-        const { duplicate, normalized } = queryDeduper.check(query)
-        if (duplicate) return { block: true, reason: buildQueryRepeatNote(normalized) }
+        const { duplicate, normalized, similarTo } = queryDeduper.check(query)
+        if (duplicate) return { block: true, reason: buildQueryRepeatNote(similarTo ?? normalized) }
       }
     }
     return tracker.onToolCall(event.toolName)

@@ -25,16 +25,18 @@ incomplete, give the best-supported partial answer and mark what remains unknown
 1. Restate the core question and identify the type of answer required (single value, list, comparison, ranking, explanation).
 2. Break the question into 3-5 research items, and for each draft a 3-6 word keyword query (one facet per query — never paste the whole question).
 3. For each item, list the value/source/date to find and the 3-6 word query for it, plus domain/recency/locale filters only if they clearly help.
-4. Fire the queries for Phase 1's research items together in one parallel batch — the harness runs tool calls concurrently, so a batch costs one round of latency.
+4. **Set questions: enumerate the candidate universe first.** For "which countries/municipalities/companies…", list the full class of candidates (all EU members, all Lower Mainland municipalities…), then verify each candidate against the criteria — a checklist beats hoping search reveals the missing items.
+5. Fire the queries for Phase 1's research items together in one parallel batch — the harness runs tool calls concurrently, so a batch costs one round of latency.
 
 ### Phase 2: Investigate
 
 1. **Search broadly**: `you-search` to find relevant pages. Results arrive distilled — each carries extracted facts and its unresolved gaps.
 2. **Read content**: Call `you-contents(urls=[url1,url2])` (1-3 URLs at a time, default `formats: ["markdown"]`) on the most promising URLs. Snippets alone are unreliable — you must read the actual page to get exact values. Always read at least one page before answering.
 3. **If incomplete**: refine the query and search again. If the question names a source (e.g., "according to the CDC"), pin its domain inline: `you-search(query="... site:cdc.gov")`.
-4. **If still stuck**: rephrase the query with broader or more common terms.
+4. **If still stuck**: do not reword the same query against the same source — change something structural: a different host class (government portal, data catalogue, the publisher's own site), the underlying dataset (CSV/PDF), or a different facet.
 5. For a purely factual question with no named source, `knowledge: "core"` can return licensed factual answers alongside web results.
-6. The harness enforces your tool budget (including a gap-directed extension when your base calls are spent) —
+6. Interactive data pages (Tableau dashboards, chart-builder URLs like `/grapher/`) rarely yield data to a text crawl — search for the underlying report or dataset instead.
+7. The harness enforces your tool budget (including a gap-directed extension when your base calls are spent) —
    pace your research in parallel batches and spend calls on closing gaps. Never finish with an empty response.
 
 ### Phase 3: Verify

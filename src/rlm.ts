@@ -176,7 +176,11 @@ export function formatStructuredExtraction(contract: ExtractionContract): string
 /** Query-thrashing intercept: normalize for exact-repeat detection (case and
  * whitespace only — punctuation differences still count as distinct). */
 export function normalizeQuery(query: string): string {
-  return query.toLowerCase().replace(/\s+/g, ' ').trim()
+  return query
+    .toLowerCase()
+    .replace(/[^a-z0-9\s:/.-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 /** Positive refine-or-answer recipe for a repeated query; returned as the
@@ -190,15 +194,63 @@ export function buildQueryRepeatNote(normalized: string): string {
 }
 
 export class QueryDeduper {
-  private seen = new Set<string>()
+  private seen: string[] = []
 
-  check(query: string): { duplicate: boolean; normalized: string } {
+  check(query: string): { duplicate: boolean; normalized: string; similarTo?: string } {
     const normalized = normalizeQuery(query)
     if (normalized.length === 0) return { duplicate: false, normalized }
-    if (this.seen.has(normalized)) return { duplicate: true, normalized }
-    this.seen.add(normalized)
+    if (this.seen.includes(normalized)) {
+      return { duplicate: true, normalized, similarTo: normalized }
+    }
+    for (const prior of this.seen) {
+      if (queriesSimilar(normalized, prior)) {
+        // Near-duplicates are recorded too, so near-variants of variants
+        // can't accumulate into a fresh-looking chain.
+        this.seen.push(normalized)
+        return { duplicate: true, normalized, similarTo: prior }
+      }
+    }
+    this.seen.push(normalized)
     return { duplicate: false, normalized }
   }
+}
+
+/** True when a you-search response returned zero results (web, news, and
+ * knowledge all empty/absent). Zero-result payloads carry the server's
+ * retry guidance — they must pass through to the root verbatim, never be
+ * distilled into the extraction contract. */
+export function isEmptySearchResult(details: unknown): boolean {
+  if (details === null || details === undefined || typeof details !== 'object') return true
+  const results = (details as { results?: Record<string, unknown> }).results
+  if (results === null || results === undefined || typeof results !== 'object') return true
+  for (const key of ['web', 'news', 'knowledge']) {
+    const arr = (results as Record<string, unknown>)[key]
+    if (Array.isArray(arr) && arr.length > 0) return false
+  }
+  return true
+}
+
+/** Semantic near-duplicate detection: Jaccard similarity over normalized
+ * token sets, with a minimum overlap mass so short distinct facets survive.
+ * Catches the measured thrash pattern (18 syntactic variants of the same
+ * ourworldindata query) that exact-match dedup misses. */
+export function queriesSimilar(a: string, b: string, threshold = 0.8): boolean {
+  const tokensA = new Set(
+    normalizeQuery(a)
+      .split(' ')
+      .filter((t) => t.length > 0),
+  )
+  const tokensB = new Set(
+    normalizeQuery(b)
+      .split(' ')
+      .filter((t) => t.length > 0),
+  )
+  if (tokensA.size === 0 || tokensB.size === 0) return false
+  if (Math.min(tokensA.size, tokensB.size) < 3) return false
+  let overlap = 0
+  for (const t of tokensA) if (tokensB.has(t)) overlap += 1
+  const union = new Set([...tokensA, ...tokensB]).size
+  return overlap / union >= threshold
 }
 
 const STOP_WORDS = new Set([

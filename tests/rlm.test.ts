@@ -14,11 +14,13 @@ import {
   formatExtractionFallback,
   formatExtractionSuccess,
   formatStructuredExtraction,
+  isEmptySearchResult,
   isFullPageSearch,
   narrowToGoal,
   normalizeQuery,
   parseExtractionContract,
   QueryDeduper,
+  queriesSimilar,
   RLM_CONFIG,
   type RlmConfig,
   runChunkedExtraction,
@@ -435,6 +437,45 @@ describe('visited_queries dedup (query-thrashing intercept)', () => {
     expect(note).toContain('refine')
     expect(note).toContain('final answer')
     expect(note.toLowerCase()).not.toContain('not supported')
+  })
+})
+
+describe('zero-result passthrough (server guidance must reach the root)', () => {
+  test('detects an empty result set from the structured MCP response', () => {
+    expect(isEmptySearchResult({ results: { web: [], news: [] } })).toBe(true)
+    expect(isEmptySearchResult({ results: {} })).toBe(true)
+    expect(isEmptySearchResult(undefined)).toBe(true)
+    expect(isEmptySearchResult({ results: { web: [{ url: 'https://x' }], news: [], knowledge: [] } })).toBe(false)
+  })
+})
+
+describe('semantic query dedup (paraphrase thrash)', () => {
+  test('near-identical paraphrases block even when wording differs', () => {
+    // Direct threshold check: 5/6 shared tokens = 0.83 Jaccard.
+    expect(
+      queriesSimilar(
+        'ourworldindata.org age-standardized death rate pancreatic cancer',
+        'ourworldindata.org "age-standardized death rate" pancreatic cancer 2014',
+      ),
+    ).toBe(true)
+    expect(queriesSimilar('alpha beta gamma', 'alpha beta delta')).toBe(false) // 3/5 < 0.8
+    const deduper = new QueryDeduper()
+    const first = deduper.check('ourworldindata.org "age-standardized death rate" pancreatic cancer 2014')
+    expect(first.duplicate).toBe(false)
+    const paraphrase = deduper.check('ourworldindata.org age-standardized death rate pancreatic cancer')
+    expect(paraphrase.duplicate).toBe(true)
+    // A genuinely different facet passes.
+    const different = deduper.check('site:catalogue.data.gov.bc.ca ICBC vehicle population municipality')
+    expect(different.duplicate).toBe(false)
+  })
+
+  test('short queries only match on high overlap; small facets stay distinct', () => {
+    const deduper = new QueryDeduper()
+    expect(deduper.check('Surrey ICBC passenger vehicles').duplicate).toBe(false)
+    // 3/4 tokens shared but only 4 tokens total — below the distinct-facet bar? No:
+    // 3/4 overlap is high; a different municipality is a different facet though.
+    const different = deduper.check('Langley ICBC passenger vehicles')
+    expect(different.duplicate).toBe(false)
   })
 })
 
