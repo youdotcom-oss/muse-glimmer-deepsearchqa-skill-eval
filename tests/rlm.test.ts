@@ -122,9 +122,12 @@ describe('runChunkedExtraction', () => {
     expect(prompts.length).toBe(4) // 3 map + 1 merge
     expect(prompts[0]).toContain('chunk 1 of 3')
     expect(prompts[2]).toContain('chunk 3 of 3')
-    // Merge prompt carries the per-chunk extractions.
+    // Merge prompt carries the per-chunk extractions and demands the same
+    // JSON contract so chunked-mode output stays parseable (14/15 -> 15/15).
     expect(prompts[3]).toContain('part1')
     expect(prompts[3]).toContain('part3')
+    expect(prompts[3]).toContain('"facts"')
+    expect(prompts[3]).toContain('deduplicated')
     expect(outcome.text).toBe('part4')
     expect(outcome.usage.input).toBe(40)
     expect(outcome.usage.cost.total).toBeCloseTo(0.04)

@@ -286,9 +286,13 @@ export function buildExtractionUserPrompt(goal: string, chunk: string, index: nu
 export function buildMergeUserPrompt(goal: string, joinedExtractions: string): string {
   return (
     `Extraction goal: ${goal}\n\n` +
-    'Below are per-chunk extractions from one document. ' +
-    'Merge them into a single dense, deduplicated answer to the goal. ' +
-    'Preserve specific facts, figures, names, URLs, and dates exactly.\n\n' +
+    'Below are per-chunk extraction contracts from one document. ' +
+    'Merge them into a single dense, deduplicated set of facts for the goal. ' +
+    'Preserve specific facts, figures, names, URLs, and dates exactly; drop duplicates and anything irrelevant to the goal. ' +
+    'Respond ONLY with the same JSON contract shape — {"facts": [...], "goal_status": "satisfied" | "partially_satisfied" | "not_found", ' +
+    '"unresolved_gaps": [...], "confidence": <0-1>} — no markdown fences, no preamble: ' +
+    '"facts" is the merged deduplicated list; "unresolved_gaps" is the union of gaps that the merged facts still do not resolve; ' +
+    '"goal_status" reflects the merged facts; "confidence" is your confidence in the merge.\n\n' +
     `--- BEGIN EXTRACTIONS ---\n${joinedExtractions}\n--- END EXTRACTIONS ---`
   )
 }
