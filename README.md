@@ -104,6 +104,19 @@ Progress across the three configurations evaluated on this model (all 900 tasks,
 
 Observations for this model, not cross-model conclusions: the A/B-validated levers (15-call budget, high thinking) plus per-result truncation eliminated the trial-death tiers — 99.8% of trials now complete and produce an answer, up from 62.8% in the first run. The remaining failures are almost entirely answer-quality, not harness: fully incorrect 612 (final-step reasoning — barely movable by budget or thinking per the A/B buckets), incomplete set enumeration 374, correct-but-extraneous 131. The next frontier is the model itself or a stronger reasoning/synthesis loop, not harness mechanics.
 
+### 50-task sample — 2026-09-14 (RLM depth-1 extraction vs. the cap15/high baseline cell)
+
+Same first-50 tasks, K=1, same cell config (`MAX_TOOL_CALLS=15`, `THINKING_LEVEL=high`); RLM adds in-tool distillation sub-calls (goal-conditioned, JSON contract, output-capped), internal dumps with goal-grep narrowing, full_page steering, and repeat-query dedup. Artifacts: `data/ab/rlm-cap15-high-*` (gitignored; local). n=50, single model — directional, not significant.
+
+| | baseline cap15/high | RLM cap15/high |
+| --- | --- | --- |
+| Avg F1 (raw) | 0.6647 | **0.6985** (+5.1% relative) |
+| Trial pass rate | 0.60 | 0.58 |
+| Avg end-to-end latency | 109.5s | 211.4s |
+| Avg total cost / trial (You.com billed completed-only) | $0.103 | **$0.077** |
+
+Process notes from the RLM cell trajectory: 665 extractions (82% JSON contract), 47.2M raw chars distilled to 2.0M chars entering root context (4.3%), 9,138 facts; modes 632 single / 26 narrowed / 7 chunked; sub-call avg output 1,106 tokens with 0 reasoning; 111 budget blocks, 0 full_page attempts (description guidance prevented all), 0 repeat-query blocks. The latency premium (~+93%) is the cost of the distillation layer; the cost drop comes from completed-only billing plus fewer billable calls reaching the API.
+
 For reference, the DeepSearchQA paper's Table 4 reports GPT-5 High Reasoning at 73.24 F1, Gemini 3 Pro Preview at 76.86 F1, GPT-5 Pro High Reasoning at 78.98 F1, and Gemini Deep Research Agent at 81.90 F1.
 
 ## Metrics definitions
