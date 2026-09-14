@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { Usage } from '@earendil-works/pi-ai'
 import {
   agePath,
+  buildQueryRepeatNote,
   chunkText,
   DUMP_DIR_PREFIX,
   DumpStore,
@@ -15,7 +16,9 @@ import {
   formatStructuredExtraction,
   isFullPageSearch,
   narrowToGoal,
+  normalizeQuery,
   parseExtractionContract,
+  QueryDeduper,
   RLM_CONFIG,
   type RlmConfig,
   runChunkedExtraction,
@@ -376,6 +379,36 @@ describe('formatStructuredExtraction (root-facing contract render)', () => {
     expect(text).toContain('not_found')
     expect(text).toContain('No facts')
     expect(text).toContain('nothing')
+  })
+})
+
+describe('visited_queries dedup (query-thrashing intercept)', () => {
+  test('normalizes case and whitespace', () => {
+    expect(normalizeQuery('  Top Story   on Hacker News ')).toBe('top story on hacker news')
+  })
+
+  test('first query passes; exact repeat in any casing/spacing blocks; distinct query passes', () => {
+    const deduper = new QueryDeduper()
+    expect(deduper.check('Top story on HN').duplicate).toBe(false)
+    expect(deduper.check('top story on hn').duplicate).toBe(true)
+    expect(deduper.check('  TOP STORY ON HN  ').duplicate).toBe(true)
+    expect(deduper.check('different query entirely').duplicate).toBe(false)
+  })
+
+  test('empty or whitespace queries never block', () => {
+    const deduper = new QueryDeduper()
+    expect(deduper.check('').duplicate).toBe(false)
+    expect(deduper.check('   ').duplicate).toBe(false)
+    // ...and are not recorded as seen.
+    expect(deduper.check('').duplicate).toBe(false)
+  })
+
+  test('steering note names the repeated query with a refine-or-answer recipe', () => {
+    const note = buildQueryRepeatNote('top story on hacker news')
+    expect(note).toContain('top story on hacker news')
+    expect(note).toContain('refine')
+    expect(note).toContain('final answer')
+    expect(note.toLowerCase()).not.toContain('not supported')
   })
 })
 

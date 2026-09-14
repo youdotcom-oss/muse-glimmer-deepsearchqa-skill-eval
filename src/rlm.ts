@@ -136,6 +136,34 @@ export function formatStructuredExtraction(contract: ExtractionContract): string
   return [head, facts].filter((part) => part.length > 0).join('\n') + gaps
 }
 
+/** Query-thrashing intercept: normalize for exact-repeat detection (case and
+ * whitespace only — punctuation differences still count as distinct). */
+export function normalizeQuery(query: string): string {
+  return query.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+/** Positive refine-or-answer recipe for a repeated query; returned as the
+ * tool_call block reason, so the repeat attempt is budget-free. */
+export function buildQueryRepeatNote(normalized: string): string {
+  return (
+    `[You already searched "${normalized}". Do not repeat it: refine the wording toward the specific ` +
+    'missing fact, or switch to a different facet of the goal. If you have enough evidence, ' +
+    'write your final answer now.]'
+  )
+}
+
+export class QueryDeduper {
+  private seen = new Set<string>()
+
+  check(query: string): { duplicate: boolean; normalized: string } {
+    const normalized = normalizeQuery(query)
+    if (normalized.length === 0) return { duplicate: false, normalized }
+    if (this.seen.has(normalized)) return { duplicate: true, normalized }
+    this.seen.add(normalized)
+    return { duplicate: false, normalized }
+  }
+}
+
 const STOP_WORDS = new Set([
   'the',
   'and',

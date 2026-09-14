@@ -9,12 +9,16 @@ import { type CallToolResult, Client, StreamableHTTPClientTransport } from '@mod
 import { type TSchema, Type } from 'typebox'
 import { createBudgetTracker, readMaxToolCalls, readMaxToolResultChars } from './budget-policy.ts'
 import {
+  buildQueryRepeatNote,
   DumpStore,
   FULL_PAGE_STEERING_NOTE,
   formatExtractionFallback,
   formatExtractionSuccess,
+  formatStructuredExtraction,
   isFullPageSearch,
   narrowToGoal,
+  parseExtractionContract,
+  QueryDeduper,
   RLM_CONFIG,
   runChunkedExtraction,
   type SubCall,
@@ -214,6 +218,11 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
             goalEffective,
             RLM_CONFIG,
           )
+          // Structured contract: JSON in, lean facts + gaps out. A parse
+          // failure degrades to prose extraction (the pre-contract behavior);
+          // it must never discard the result the call already paid for.
+          const contract = parseExtractionContract(outcome.text)
+          const extractedText = contract.ok ? formatStructuredExtraction(contract.contract) : outcome.text
           return {
             content: [
               {
@@ -222,7 +231,7 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
                   dump.path,
                   rawText.length,
                   outcome.chunks,
-                  outcome.text,
+                  extractedText,
                   outcome.truncatedToChunks,
                 ),
               },
@@ -231,9 +240,14 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
               ...(typeof adapted.details === 'object' && adapted.details !== null ? adapted.details : {}),
               rlm: {
                 mode,
+                contract: contract.ok ? 'json' : 'prose',
+                goalStatus: contract.ok ? contract.contract.goal_status : undefined,
+                facts: contract.ok ? contract.contract.facts.length : undefined,
+                confidence: contract.ok ? contract.contract.confidence : undefined,
+                unresolvedGaps: contract.ok ? contract.contract.unresolved_gaps : undefined,
                 chunks: outcome.chunks,
                 originalLength: rawText.length,
-                extractedLength: outcome.text.length,
+                extractedLength: extractedText.length,
                 truncated: outcome.truncatedToChunks,
                 narrowedRegions,
                 dumpPath: dump.path,
@@ -289,9 +303,19 @@ export default async function youToolsExtension(pi: ExtensionAPI): Promise<void>
   // text before this hook; truncation remains the floor when extraction
   // fails. See src/budget-policy.ts and src/rlm.ts.
   const tracker = createBudgetTracker(readMaxToolCalls(process.env), readMaxToolResultChars(process.env))
+  // Per-session deduper: exact-repeat queries are blocked budget-free with a
+  // refine-or-answer note (the query-thrashing tier from the 2026-09-11 run).
+  const queryDeduper = new QueryDeduper()
   pi.on('tool_call', (event) => {
     if (isFullPageSearch(event.toolName, event.input)) {
       return { block: true, reason: FULL_PAGE_STEERING_NOTE }
+    }
+    if (event.toolName === 'you-search') {
+      const query = (event.input as { query?: unknown } | undefined)?.query
+      if (typeof query === 'string' && query.trim().length > 0) {
+        const { duplicate, normalized } = queryDeduper.check(query)
+        if (duplicate) return { block: true, reason: buildQueryRepeatNote(normalized) }
+      }
     }
     return tracker.onToolCall(event.toolName)
   })
