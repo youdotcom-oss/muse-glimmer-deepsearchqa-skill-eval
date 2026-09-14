@@ -128,7 +128,31 @@ its resolution floor; the discriminating experiment is the full 900x3 run on one
 the recorded leader; the HTML retry is kept as correct-by-construction (0 fired here but free when a
 dashboard does appear).
 
-### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
+### 50-task sample re-run — 2026-09-14 (RLM v5: sub-model-verdict HTML retry gate)
+
+Same 50 tasks; changes since v4: the URL-shape heuristic (isInteractiveDataUrl) deleted —
+the HTML retry gate is now the sub-model's verdict alone (not_found or zero facts from any
+page, markdown-first, exactly one retry, HTML scanned to bare structure before the fresh
+sub-call). New details.rlm.reads ledger records per-read format/facts/winner.
+
+| | RLM v2 | RLM v4 | **RLM v5** |
+| --- | --- | --- | --- |
+| Avg F1 (raw) | 0.7603 | 0.7122 | **0.8054** |
+| Pass (Fully Correct) | 0.58 | 0.52 | **0.64** |
+| Latency / trial | 242s | 214s | 227s |
+| Cost / trial | $0.092 | $0.092 | **$0.088** |
+| Contract JSON | 98% | 98% | **100%** (747/747) |
+| Extraction density | 4.3% | 1.8% | 2.3% |
+| HTML retries fired | — | 0 | 0 (markdown sufficed on all reads) |
+
+Best recorded sample result on every column. Paired vs v4: +7 gains / −1 regression (17 of 21
+non-FC v4 trials still failed here — the band persists). Retry fired 0 times: markdown reads
+sufficed again, so the improved gate is measured only as simpler-not-worse. Cumulative v1→v5
+trajectory (same tasks): 0.5341-equivalent truncation baseline -> 0.8054 on the primary metric,
+with extraction density 4.3% -> 2.3% and cost/trial down ~15%. Caveat unchanged: n=50 K=1,
+variance band ±3-4 tasks; the full 900x3 run on this config is the decision point.
+
+### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
 
 Same 50 tasks; changes since v2: Jaccard paraphrase dedup (>=0.8), zero-result passthrough
 (server retry guidance reaches the root), server-rejection unbilling, skill enumeration
