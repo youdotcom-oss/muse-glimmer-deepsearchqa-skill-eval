@@ -33,7 +33,7 @@ Answer from your extraction results — each one is a sub-model's distilled read
 2. **Read content**: Call `you-contents(urls=[url1,url2])` (1-3 URLs at a time) on the most promising URLs. Always read at least one page before answering.
 3. **If incomplete**: refine the query and search again. If the question names a source (e.g., "according to the CDC"), pin its domain inline: `you-search(query="... site:cdc.gov")`.
 4. **If still stuck**: do not reword the same query against the same source — change something structural: a different host class (government portal, data catalogue, the publisher's own site), the underlying dataset (CSV/PDF), or a different facet.
-5. For a purely factual question with no named source, `knowledge: "core"` can return licensed factual answers alongside web results.
+5. If a document or file read comes back thin, search for the same data in an HTML source before concluding it is unavailable — publishers usually reprint report/dataset figures on regular pages.
 
 ### Phase 3: Verify
 
