@@ -241,6 +241,46 @@ dominated by run variance. Decision for the full run: keep question-aware goals 
 verified, no measured harm) or revert to v5's blind goal (best recorded F1). Full 900x3 run
 resolves it at real significance.
 
+### 50-task sample re-run — 2026-09-14 (RLM v7: two-stage sufficiency-gated distillation, commit 8da8f52)
+
+Same 50 tasks; changes since v5 (TWO variables changed — attribution is cautious): (1) the
+you-search distillation is now two-stage and sufficiency-gated — stage 1 judges sufficiency
+relative to the task (meta-query) and its own query, and when insufficient nominates 1–3
+URLs that the extension reads via one internal you-contents fetch + parallel distill
+sub-calls, collated deterministically (stage-2 facts first, cap 12; worst stage-2 status;
+min confidence); (2) the ROOT runs at THINKING_LEVEL=xhigh (v5/v6 used high). Sub-calls run
+at reasoningEffort medium (was minimal). Deleted: HTML retry/scan, chunk+map merge, reads
+ledger. Stage-2 internal fetches are not visible as tool_call events (MINIMAL estimator gap
+recorded in src/you-cost.ts; details.rlm.internalContentsCalls carries the count).
+
+| | RLM v5 | **RLM v7** |
+| --- | --- | --- |
+| Avg F1 (raw) | **0.8054** | 0.7054 |
+| Pass (Fully Correct) | **0.64** | 0.52 |
+| Latency / trial | 227s | 413s |
+| Cost / trial | $0.088 | **$0.087** |
+| Tool calls / trial | 42.5 | 42.0 |
+| Contract JSON (distilled searches) | 100% (747/747) | 96.5% (656/680) |
+| Stage-2 gate rate | — (n/a) | 69.9% of searches (488/698) |
+| Internal contents fetches | 0 | 488 (1,186 URLs; 2.43/fetch) |
+| Root-initiated you-contents calls | — | 136 (180 pages) |
+| Extraction density | 2.3% | 1.9% |
+| Outcomes (FC / incomplete / wrong / ungradable) | — | 26 / 15 / 5 / 4 |
+
+Paired vs v5: mean per-task F1 delta −0.098 (sd 0.329, se 0.047, n=50), 6 task gains / 15
+losses, pass flips +4/−10. Observations for this run (not cross-model conclusions): the
+gate fired on 46/50 trials (avg 9.8 gated searches per trial), so stage 2 is a major
+cost/latency surface — latency nearly doubled (+186s/trial), consistent with ~10 serial
+rounds of internal fetch + parallel medium-reasoning distills (plus the root's xhigh
+thinking; the two effects are not separable on this sample). Cost/trial stayed flat
+($0.087): the added sub-call tokens are cheap FC usage, and the 488 internal You.com
+fetches are unbilled in the estimator (see MINIMAL note). 85% of collated stage-2 results
+read `not_found` (414/488) — the worst-of-stage-2 status semantics is pessimistic when any
+one of up to 3 target reads comes back empty, which may over-signal gaps to the root. F1
+and FC regressed vs v5; with two changed variables and the n=50 band (±3–4 tasks), the
+xhigh-root-vs-gate attribution and the retry decision need a decomposition run (v7 gate at
+THINKING_LEVEL=high) before any full-run commitment.
+
 ### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
 
 Same 50 tasks; changes since v2: Jaccard paraphrase dedup (>=0.8), zero-result passthrough
