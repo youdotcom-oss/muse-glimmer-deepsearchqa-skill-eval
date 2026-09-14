@@ -227,13 +227,7 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
             content: [
               {
                 type: 'text',
-                text: formatExtractionSuccess(
-                  dump.path,
-                  rawText.length,
-                  outcome.chunks,
-                  extractedText,
-                  outcome.truncatedToChunks,
-                ),
+                text: formatExtractionSuccess(rawText.length, outcome.chunks, extractedText, outcome.truncatedToChunks),
               },
             ],
             details: {
@@ -261,7 +255,7 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
           // results the call already paid for.
           const message = error instanceof Error ? error.message : String(error)
           return {
-            content: [{ type: 'text', text: formatExtractionFallback(dump.path, rawText.length, message, rawText) }],
+            content: [{ type: 'text', text: formatExtractionFallback(rawText.length, message, rawText) }],
             details: { rlmError: message, dumpPath: dump.path },
           }
         }

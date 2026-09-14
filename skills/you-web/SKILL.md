@@ -43,8 +43,17 @@ Build answers from read evidence, not snippets alone. Answer with citations from
 ### Phase 4: Answer
 
 1. Put the answer first. If the answer has multiple items (a list or set), put each item on its own line.
-2. Include inline citations with real URLs.
-3. List your sources.
+2. Answer with ONLY the requested items. No URLs, citations, source lists, file references, or supporting commentary unless the question explicitly asks for them.
+3. Obey the question's negative constraints (e.g. "do not list any other information") literally — extra content is penalized even when the items are correct.
+4. Sources go in the answer only when the question asks for them.
+
+### Phase 5: Gap accountability (before answering)
+
+- Review the `Unresolved gaps` notes from your extraction results. If a gap matches a required element of the question, do NOT answer around it:
+  reformulate the search toward the gap, or use `you-contents` on the most promising URL for a full-page read
+  (highlights often lack tabular data).
+- Answer "cannot be verified" only after a `you-contents` deep-read on the best source came back empty —
+  and even then, list the best-supported partial answer.
 
 ## Evidence Rules
 
@@ -61,28 +70,24 @@ Build answers from read evidence, not snippets alone. Answer with citations from
 
 ## Tool Budget and Recovery
 
-- Use no more than 10 total tool calls.
-- If you have not found a complete answer after 12 calls, synthesize the best partial answer.
+- The harness enforces your tool budget; when a budget warning or BUDGET EXTENSION note appears, spend remaining
+  calls ONLY to fill unresolved gaps from your extractions, then answer.
+- If you have not found a complete answer and your budget is nearly spent, synthesize the best partial answer.
 - Never finish with an empty response.
 
 ## Output Format
 
 ```markdown
-## Answer
-[Provide the requested value(s) first.]
-
-## Evidence
-[Concise explanation with citations.]
-
-## Sources
-1. [Title or source](URL)
+[Provide the requested value(s) first, one per line for sets.]
 ```
 
-## Citation Quality Rules
+Optional: a `Sources:` section ONLY when the question asks for URLs or sources.
 
-- Every claim must have a citation.
-- Citations must be real URLs.
-- Do not cite sources that don't support the claim.
+## Citation Quality Rules (research discipline)
+
+- Every claim must be traceable to a source you actually read.
+- Citations are for verification during research — they are not part of the final answer unless requested.
+- Do not treat a source as supporting a claim it doesn't support.
 
 ## Safety
 

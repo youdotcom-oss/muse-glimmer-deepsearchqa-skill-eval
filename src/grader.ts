@@ -33,13 +33,16 @@ export interface AnswerScore {
   excessiveCount: number
 }
 
-const SYSTEM_PROMPT = `You are a strict but fair DeepSearchQA answer grader.
+const SYSTEM_PROMPT = `You are a DeepSearchQA answer grader aligned with the official benchmark rater.
 Compare the candidate answer to the gold answer. Grade semantic correctness, not exact wording.
-Do not reward citations, style, or extra explanation. Do not use outside knowledge except to judge equivalence.
+"Excessive Answers" lists additional ANSWER ITEMS the candidate presents as part of the final answer
+that are not in the gold list. Citations, URLs, file references, explanations, and supporting context
+are NOT answer items and must never be listed as excessive — unless they assert an additional
+competing or contradictory answer. Do not use outside knowledge except to judge equivalence.
 Return only strict JSON with these fields:
 {
   "Correctness Details": [{"expected": "required gold answer part", "found": true/false, "explanation": "short reason"}],
-  "Excessive Answers": ["incorrect extra answer parts only"],
+  "Excessive Answers": ["incorrect extra answer items only"],
   "Rationale": "brief summary"
 }`
 
@@ -61,7 +64,7 @@ export async function gradeFromInput(input: GraderInput): Promise<object> {
   }
 
   const answerType = String(metadata.answer_type ?? 'Set Answer') as AnswerType
-  const model = readStringEnv('JUDGE_MODEL', 'deepseek/deepseek-v4-flash-0731')
+  const model = readStringEnv('JUDGE_MODEL', 'deepseek/deepseek-v4.1-flash')
   const fallbackModel = readStringEnv('JUDGE_FALLBACK_MODEL', 'qwen/qwen3.6-flash')
   const timeoutMs = readIntegerEnv('JUDGE_TIMEOUT_MS', 180_000, 1)
   const user = buildJudgePrompt({

@@ -60,6 +60,22 @@ export function buildBudgetExhaustedReason(maxCalls: number): string {
   )
 }
 
+/** Grace window: after the base budget is spent, this many additional calls
+ * are allowed, directed at closing the unresolved gaps the extraction
+ * sub-calls surfaced (the F3 failure pattern: trials answering with open gaps
+ * despite 13 consecutive gap reports). Guidance rides the first grace call's
+ * result; the hard cap follows. */
+export const GRACE_TOOL_CALLS = 4
+
+export function buildGraceHint(maxCalls: number, graceCalls: number): string {
+  return (
+    `\n\n---\nBUDGET EXTENSION: your base ${maxCalls} calls are spent. You have up to ${graceCalls} additional ` +
+    'calls, ONLY to fill the unresolved gaps your extractions flagged — refine a query toward a named gap, ' +
+    'or use you-contents on the most promising URL (highlights often lack tabular data). ' +
+    'Then answer with the best-supported facts and list only the items that satisfy every criterion.'
+  )
+}
+
 /** Dump-inspection tools (read-dump/grep-dump) ride on a small side budget
  * instead of the search cap: they are the re-inspection fallback for RLM
  * extraction, and taxing them against the A/B-validated search budget would
@@ -99,10 +115,13 @@ export function createBudgetTracker(
   maxCalls: number,
   maxResultChars: number,
   dumpLimit: number = DUMP_TOOL_CALL_LIMIT,
+  graceLimit: number = GRACE_TOOL_CALLS,
 ): BudgetTracker {
   let callsUsed = 0
   let dumpCallsUsed = 0
+  let graceUsed = 0
   let checkInPending = false
+  let graceHintPending = false
   const midpoint = Math.ceil(maxCalls / 2)
   return {
     onToolCall(toolName: string) {
@@ -111,10 +130,18 @@ export function createBudgetTracker(
         dumpCallsUsed += 1
         return undefined
       }
-      if (callsUsed >= maxCalls) return { block: true, reason: buildBudgetExhaustedReason(maxCalls) }
-      callsUsed += 1
-      if (callsUsed === midpoint) checkInPending = true
-      return undefined
+      if (callsUsed < maxCalls) {
+        callsUsed += 1
+        if (callsUsed === midpoint) checkInPending = true
+        return undefined
+      }
+      // Grace window: gap-directed extension before the hard block.
+      if (graceUsed < graceLimit) {
+        if (graceUsed === 0) graceHintPending = true
+        graceUsed += 1
+        return undefined
+      }
+      return { block: true, reason: buildBudgetExhaustedReason(maxCalls) }
     },
     onToolResult(content) {
       let mutated = false
@@ -147,6 +174,12 @@ export function createBudgetTracker(
             ...next.slice(lastTextIndex + 1),
           ]
         }
+        mutated = true
+      }
+      if (graceHintPending) {
+        graceHintPending = false
+        const hint = buildGraceHint(maxCalls, graceLimit)
+        next = [...next, { type: 'text', text: hint } as (typeof next)[number]]
         mutated = true
       }
       return mutated ? { content: next } : undefined

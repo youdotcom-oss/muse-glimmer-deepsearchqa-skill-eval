@@ -32,11 +32,9 @@ describe('dump-tool side budget', () => {
     for (const name of ['read-dump', 'grep-dump', 'read-dump', 'grep-dump', 'read-dump', 'grep-dump']) {
       expect(tracker.onToolCall(name)).toBeUndefined()
     }
-    // Search budget untouched by the six inspection calls.
-    expect(tracker.onToolCall('you-search')).toBeUndefined()
-    expect(tracker.onToolCall('you-contents')).toBeUndefined()
-    expect(tracker.onToolCall('you-search')).toBeUndefined()
-    expect(tracker.onToolCall('you-contents')?.block).toBe(true)
+    // Search budget untouched by the six inspection calls: 3 base + 4 grace.
+    for (let i = 0; i < 7; i += 1) expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')?.block).toBe(true)
     // Dump side budget now exhausted.
     const blocked = tracker.onToolCall('read-dump')
     expect(blocked?.block).toBe(true)
@@ -53,20 +51,31 @@ describe('dump-tool side budget', () => {
 })
 
 describe('createBudgetTracker.onToolCall', () => {
-  test('allows calls up to the cap, then blocks with the P3-filter reason', () => {
+  test('base budget, then a grace window of 4 gap-directed calls, then hard block', () => {
     const tracker = createBudgetTracker(3, 12_000)
+    // Base budget: 3 calls.
     expect(tracker.onToolCall('you-search')).toBeUndefined()
     expect(tracker.onToolCall('you-search')).toBeUndefined()
     expect(tracker.onToolCall('you-search')).toBeUndefined()
+    // Grace window: 4 more gap-directed calls are allowed.
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    // Then the hard block, with the P3-filter answer-forcing reason.
     const blocked = tracker.onToolCall('you-search')
     expect(blocked?.block).toBe(true)
     expect(blocked?.reason).toContain('Tool budget exhausted (3/3)')
     expect(blocked?.reason).toContain('ONLY the items that satisfy every criterion')
   })
 
-  test('blocked calls do not consume budget further', () => {
+  test('blocked calls do not consume budget or grace further', () => {
     const tracker = createBudgetTracker(1, 12_000)
-    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')).toBeUndefined() // base 1
+    expect(tracker.onToolCall('you-search')).toBeUndefined() // grace 1
+    expect(tracker.onToolCall('you-search')).toBeUndefined() // grace 2
+    expect(tracker.onToolCall('you-search')).toBeUndefined() // grace 3
+    expect(tracker.onToolCall('you-search')).toBeUndefined() // grace 4
     expect(tracker.onToolCall('you-search')?.block).toBe(true)
     expect(tracker.onToolCall('you-search')?.block).toBe(true)
   })
@@ -102,6 +111,34 @@ describe('createBudgetTracker.onToolResult', () => {
   test('leaves small results unchanged (returns undefined)', () => {
     const tracker = createBudgetTracker(10, 1_000)
     expect(tracker.onToolResult([{ type: 'text', text: 'small' }])).toBeUndefined()
+  })
+
+  test('grace hint rides the first grace call result, exactly once, gap-directed', () => {
+    const tracker = createBudgetTracker(2, 12_000)
+    tracker.onToolCall('you-search')
+    tracker.onToolCall('you-search')
+    // Base-budget results carry no extension note.
+    for (const text of ['a', 'b']) {
+      expect(
+        tracker
+          .onToolResult([{ type: 'text', text }])
+          ?.content.some((b) => String(b.text).includes('BUDGET EXTENSION')) ?? false,
+      ).toBe(false)
+    }
+    // First grace call: allowed, and its result carries the gap-directed note.
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    const r = tracker.onToolResult([{ type: 'text', text: 'grace result' }])
+    const grace = r?.content.find((b) => String(b.text).includes('BUDGET EXTENSION'))
+    expect(grace).toBeDefined()
+    expect(String(grace?.text)).toContain('4 additional')
+    expect(String(grace?.text)).toContain('unresolved gaps')
+    expect(String(grace?.text)).toContain('you-contents')
+    // Fires once only.
+    expect(
+      tracker
+        .onToolResult([{ type: 'text', text: 'later' }])
+        ?.content.some((b) => String(b.text).includes('BUDGET EXTENSION')) ?? false,
+    ).toBe(false)
   })
 
   test('passes non-text blocks through untouched', () => {

@@ -57,9 +57,12 @@ describe('RLM_CONFIG (fixed constants, no env knobs)', () => {
   })
 
   test('sub-call output is capped (latency: sub-calls are output-bound, ~230 tok/s)', () => {
-    expect(RLM_CONFIG.maxOutputTokens).toBe(1_500)
-    // The prompt carries the same instruction so the model stops before the cap.
-    expect(EXTRACTION_SYSTEM_PROMPT).toMatch(/1,?200 tokens|dense/i)
+    // 1,800: headroom above the 10-fact cap — smoke 2 showed 1,500 truncated
+    // 18% of contracts mid-JSON (dense fact lists with URLs at ~2 chars/token).
+    expect(RLM_CONFIG.maxOutputTokens).toBe(1_800)
+    // The prompt bounds the array so the cap truncates rarely, and carries the
+    // same instruction so the model stops before the cap.
+    expect(EXTRACTION_SYSTEM_PROMPT).toMatch(/at most 10 facts/i)
     expect(EXTRACTION_SYSTEM_PROMPT).toMatch(/no preamble|no introduction/i)
   })
 })
@@ -233,23 +236,25 @@ describe('sweepStaleDumpDirs', () => {
 })
 
 describe('result text formats (model-facing contract)', () => {
-  test('extraction success: names the dump path, chunk count, and re-inspection recipe', () => {
-    const text = formatExtractionSuccess('/tmp/dumps/001-you-search.md', 42_000, 1, 'the facts', false)
-    expect(text).toContain('/tmp/dumps/001-you-search.md')
+  test('extraction success: names chunk count and density; dump path is internal-only', () => {
+    const text = formatExtractionSuccess(42_000, 1, 'the facts', false)
+    // Dump paths must never reach the root model: no read/grep tools exist, and
+    // the sampled trials showed paths leaking into final answers as citations.
+    expect(text).not.toContain('/tmp/dumps')
+    expect(text).not.toContain('.md')
     expect(text).toContain('42000 chars')
-    expect(text).toContain('grep-dump')
-    expect(text).toContain('read-dump')
     expect(text.endsWith('the facts')).toBe(true)
     // Oversize-truncated inputs must not pass silently.
-    const flagged = formatExtractionSuccess('/tmp/d.md', 3_000_000, 8, 'partial', true)
+    const flagged = formatExtractionSuccess(3_000_000, 8, 'partial', true)
     expect(flagged).toContain('partially extracted')
   })
 
-  test('extraction fallback: leads with the failure and dump pointer, then raw text', () => {
-    const text = formatExtractionFallback('/tmp/d.md', 50_000, 'provider 500', 'RAWBODY')
+  test('extraction fallback: leads with the failure note, then raw text; dump path internal-only', () => {
+    const text = formatExtractionFallback(50_000, 'provider 500', 'RAWBODY')
     expect(text.indexOf('provider 500')).toBeLessThan(text.indexOf('RAWBODY'))
     expect(text).toContain('50000 chars')
-    expect(text).toContain('grep-dump')
+    expect(text).not.toContain('/tmp/d.md')
+    expect(text).not.toContain('grep-dump')
     expect(text.endsWith('RAWBODY')).toBe(true)
   })
 })
@@ -336,6 +341,22 @@ describe('extraction contract (structured sub-call output)', () => {
     expect(parseExtractionContract(emptySatisfied).ok).toBe(false)
   })
 
+  test('salvages a truncated contract: recovers complete facts, marks partial', () => {
+    // Output-cap truncation cut the JSON after three complete facts.
+    const truncated = '{"facts": ["Fact one about the 2019 report.", "Fact two with URL https://x.gov/a", "Fact th'
+    const parsed = parseExtractionContract(truncated)
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) {
+      expect(parsed.contract.facts).toEqual(['Fact one about the 2019 report.', 'Fact two with URL https://x.gov/a'])
+      expect(parsed.contract.goal_status).toBe('partially_satisfied')
+      expect(parsed.contract.confidence).toBeLessThan(1)
+    }
+  })
+
+  test('truncation before any complete fact falls back to prose (ok:false)', () => {
+    expect(parseExtractionContract('{"facts": ["cut mid str').ok).toBe(false)
+  })
+
   test('rejects invalid goal_status, bad confidence, and non-object output', () => {
     expect(parseExtractionContract(JSON.stringify({ facts: ['f'], goal_status: 'done', confidence: 0.5 })).ok).toBe(
       false,
@@ -364,6 +385,8 @@ describe('formatStructuredExtraction (root-facing contract render)', () => {
     expect(text).toContain('- Fact two.')
     expect(text).toContain('exact year')
     expect(text).toContain('refining a query toward a gap')
+    // Gap notes carry the contents escalation: highlights often lack the data.
+    expect(text).toContain('you-contents')
   })
 
   test('omits the gap note when there are no gaps', () => {
