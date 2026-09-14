@@ -104,7 +104,29 @@ Progress across the three configurations evaluated on this model (all 900 tasks,
 
 Observations for this model, not cross-model conclusions: the A/B-validated levers (15-call budget, high thinking) plus per-result truncation eliminated the trial-death tiers — 99.8% of trials now complete and produce an answer, up from 62.8% in the first run. The remaining failures are almost entirely answer-quality, not harness: fully incorrect 612 (final-step reasoning — barely movable by budget or thinking per the A/B buckets), incomplete set enumeration 374, correct-but-extraneous 131. The next frontier is the model itself or a stronger reasoning/synthesis loop, not harness mechanics.
 
-### 50-task sample — 2026-09-14 (RLM depth-1 extraction vs. the cap15/high baseline cell)
+### 50-task sample re-run — 2026-09-14 (RLM v2: contract fixes + grader alignment + skill v2)
+
+Same 50 tasks as the first RLM sample; changes: extraction facts capped at 10, output cap 1,800,
+truncated-contract salvage, merge-prompt contract, markdown formats pin, dump-path suppression, 4-call
+gap-directed grace window, repeat-query dedup, judge `deepseek/deepseek-v4.1-flash` with the official
+excessive-answer definition, skill Phase 4 answer discipline + Phase 5 gap accountability.
+**Metric definition + judge changed this run**: pass now reports the official Fully Correct category
+(paper Section 3.1), so pass columns are not comparable to earlier rows.
+
+| | RLM v1 (2026-09-14) | **RLM v2** |
+| --- | --- | --- |
+| Avg F1 (raw, primary metric) | 0.6985 | **0.7603** (+8.9% relative) |
+| Pass rate (official Fully Correct) | — | 0.58 |
+| Latency / trial | 211s | 242s |
+| Cost / trial | $0.077 | $0.092 |
+| Contract JSON rate | 82% | **98%** (salvage+cap+merge fix) |
+| Extraction density (raw→root) | 4.3% | **2.4%** (70.1M→1.68M chars) |
+| Sub-call avg output | 1,106 tok | **804 tok** |
+| Answers with dump citations | 4 | **0** |
+
+Paired vs v1: +5 task gains (all four named answer-pollution failures converted: 17, 27, 35, 24, plus refuser 9), −5 regressions (four are missing-tail/hedging — the paper's under-retrieval mode; one is a new-judge calibration case at F1 0.899). Grace window actively used (82 extensions). Next: full-run decision on this config.
+
+### 50-task sample — 2026-09-14 (RLM depth-1 extraction vs. the cap15/high baseline cell)### 50-task sample — 2026-09-14 (RLM depth-1 extraction vs. the cap15/high baseline cell)
 
 Same first-50 tasks, K=1, same cell config (`MAX_TOOL_CALLS=15`, `THINKING_LEVEL=high`); RLM adds in-tool distillation sub-calls (goal-conditioned, JSON contract, output-capped), internal dumps with goal-grep narrowing, full_page steering, and repeat-query dedup. Artifacts: `data/ab/rlm-cap15-high-*` (gitignored; local). n=50, single model — directional, not significant.
 
