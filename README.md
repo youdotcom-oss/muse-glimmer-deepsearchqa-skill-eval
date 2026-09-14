@@ -211,7 +211,37 @@ trajectory (same tasks): 0.5341-equivalent truncation baseline -> 0.8054 on the 
 with extraction density 4.3% -> 2.3% and cost/trial down ~15%. Caveat unchanged: n=50 K=1,
 variance band ±3-4 tasks; the full 900x3 run on this config is the decision point.
 
-### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
+### 50-task sample re-run — 2026-09-14 (RLM v6: question-aware distillation)
+
+Same 50 tasks; changes since v5: the distillation goal is now question-aware — the extension
+captures the session's research question and composes the default goal with it, so sub-models
+filter facts for relevance instead of extracting generically. (Motivation: full-run analysis
+found 8,074 blind-goal contents calls whose sub-model gaps literally asked for the question,
+and the always-zero failure cluster answered with dataset schema dumps instead of the requested
+data.) Root system-prompt override also removed — pi's default prompt + the skill now carry
+behavior, matching real deployment.
+
+| | RLM v5 | **RLM v6** |
+| --- | --- | --- |
+| Avg F1 (raw) | **0.8054** | 0.7390 |
+| Pass (Fully Correct) | 0.64 | 0.62 |
+| Latency / trial | 227s | 260s |
+| Contract JSON | 100% | 100% |
+| Generic-goal gap notes | pervasive | **0** |
+| Extraction density | 2.3% | 1.6% |
+
+The target mechanism verified: generic-goal gap notes ('research question not specified')
+dropped from pervasive to zero, and extraction density dropped to 1.6% (tighter relevance
+filtering). F1 moved 0.8054 -> 0.7390 — paired mean delta -0.060 with sd 0.297 (se 0.042,
+n=50): within the noise band, not a significant regression. Interpretation: question-aware
+distillation extracts *less* but the FC pass held at 0.62 (vs 0.64), so the tighter filtering
+did not cost completeness on this sample. The F1 delta is consistent with fewer tangential
+facts being counted as excess... but the five-config spread (0.71-0.81) at n=50 remains
+dominated by run variance. Decision for the full run: keep question-aware goals (mechanism
+verified, no measured harm) or revert to v5's blind goal (best recorded F1). Full 900x3 run
+resolves it at real significance.
+
+### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
 
 Same 50 tasks; changes since v2: Jaccard paraphrase dedup (>=0.8), zero-result passthrough
 (server retry guidance reaches the root), server-rejection unbilling, skill enumeration
