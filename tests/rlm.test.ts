@@ -345,6 +345,32 @@ describe('extraction contract (structured sub-call output)', () => {
     }
   })
 
+  test('optional suggestion field parses and is preserved', () => {
+    const parsed = parseExtractionContract(
+      JSON.stringify({
+        facts: ['Fact one.'],
+        goal_status: 'not_found',
+        unresolved_gaps: ['table data'],
+        confidence: 0.4,
+        suggestion: 'The full table exists in the linked PDF; search for an HTML version of the report.',
+      }),
+    )
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) {
+      expect(parsed.contract.suggestion).toBe(
+        'The full table exists in the linked PDF; search for an HTML version of the report.',
+      )
+    }
+  })
+
+  test('missing suggestion is fine (optional field)', () => {
+    const parsed = parseExtractionContract(
+      JSON.stringify({ facts: ['Fact one.'], goal_status: 'satisfied', unresolved_gaps: [], confidence: 0.9 }),
+    )
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) expect(parsed.contract.suggestion).toBeUndefined()
+  })
+
   test('accepts fenced and prose-wrapped JSON (model tics)', () => {
     const fenced = '```json\n' + contract + '\n```'
     expect(parseExtractionContract(fenced).ok).toBe(true)

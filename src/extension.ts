@@ -300,6 +300,7 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
                 facts: contract.ok ? contract.contract.facts.length : undefined,
                 confidence: contract.ok ? contract.contract.confidence : undefined,
                 unresolvedGaps: contract.ok ? contract.contract.unresolved_gaps : undefined,
+                suggestion: contract.ok ? contract.contract.suggestion : undefined,
                 chunks: outcome.chunks,
                 originalLength: rawText.length,
                 extractedLength: extractedText.length,

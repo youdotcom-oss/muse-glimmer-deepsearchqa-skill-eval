@@ -26,7 +26,7 @@ async function main(): Promise<void> {
   const raw = (await Bun.file(SAMPLE_PATH).text()).trim().split('\n').slice(1)
   const samples: SampleRow[] = raw
     .map((line) => {
-      const [task, ...rest] = line.split('\t')
+      const [task = '', ...rest] = line.split('\t')
       return { task: task.trim(), query: rest.join('\t').trim() }
     })
     .filter((s) => s.query.length > 0)
