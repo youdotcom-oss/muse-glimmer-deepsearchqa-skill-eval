@@ -15,27 +15,56 @@ export interface YouApiCostSummary extends JsonObject {
 }
 
 export function estimateYouApiUsage(events: ReadonlyArray<Record<string, unknown>>): YouApiCostSummary {
+  // Group tool_call events by toolCallId. A call is billed iff it reached
+  // status 'completed': You.com bills returned results, and hook-blocked
+  // calls (budget, full_page steering, repeat-query dedup) never leave the
+  // local loop. Error responses return no billable content, so failed
+  // executions are also unbilled. Completed events carry no input, so
+  // contents URL counts come from the call's started sibling.
+  interface CallRecord {
+    name: unknown
+    input: JsonObject | undefined
+    output: JsonObject | undefined
+    completed: boolean
+  }
+  const calls = new Map<string, CallRecord>()
+  for (const event of events) {
+    if (event.type !== 'tool_call') continue
+    const id = asObject(event.metadata)?.toolCallId
+    const key =
+      typeof id === 'string' && id.length > 0 ? id : `${String(event.name)}:${String(event.status)}:${calls.size}`
+    const record: CallRecord = calls.get(key) ?? {
+      name: event.name,
+      input: undefined,
+      output: undefined,
+      completed: false,
+    }
+    const input = asObject(event.input)
+    if (input) record.input = input
+    if (event.status === 'completed') {
+      record.completed = true
+      record.output = asObject(event.output)
+    }
+    calls.set(key, record)
+  }
+
   let searchCalls = 0
   let searchExtractionPages = 0
   let contentsCalls = 0
   let contentsPages = 0
 
-  for (const event of events) {
-    if (event.type !== 'tool_call') continue
+  for (const record of calls.values()) {
+    if (!record.completed) continue
 
-    if (isYouSearch(event.name) && event.status === 'started') {
+    if (isYouSearch(record.name)) {
       searchCalls += 1
+      searchExtractionPages += countSearchExtractionPages(record.output)
       continue
     }
 
-    if (isYouSearch(event.name) && event.status === 'completed') {
-      searchExtractionPages += countSearchExtractionPages(asObject(event.output))
-      continue
-    }
-
-    if (isYouContents(event.name) && event.status === 'started') {
+    if (isYouContents(record.name)) {
       contentsCalls += 1
-      contentsPages += countUrls(asObject(event.input))
+      contentsPages += countUrls(record.input)
     }
   }
 

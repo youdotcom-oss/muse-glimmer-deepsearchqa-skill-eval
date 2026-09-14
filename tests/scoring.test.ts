@@ -118,7 +118,13 @@ describe('summary metrics', () => {
 describe('You.com cost estimation', () => {
   test('estimates dash-cased search, full-page extraction, and contents costs', () => {
     const cost = estimateYouApiUsage([
-      { type: 'tool_call', name: 'you-search', status: 'started', input: { query: 'x' } },
+      {
+        type: 'tool_call',
+        name: 'you-search',
+        status: 'started',
+        input: { query: 'x' },
+        metadata: { toolCallId: 's1' },
+      },
       {
         type: 'tool_call',
         name: 'you-search',
@@ -137,12 +143,21 @@ describe('You.com cost estimation', () => {
             },
           },
         },
+        metadata: { toolCallId: 's1' },
       },
       {
         type: 'tool_call',
         name: 'you-contents',
         status: 'started',
         input: { urls: ['https://example.com/a', 'https://example.com/b'] },
+        metadata: { toolCallId: 'c1' },
+      },
+      {
+        type: 'tool_call',
+        name: 'you-contents',
+        status: 'completed',
+        output: { content: [{ type: 'text', text: 'page markdown' }] },
+        metadata: { toolCallId: 'c1' },
       },
     ])
 
@@ -154,6 +169,80 @@ describe('You.com cost estimation', () => {
     expect(cost.searchExtractionCostUsd).toBeCloseTo(0.02, 8)
     expect(cost.contentsCostUsd).toBeCloseTo(0.002, 8)
     expect(cost.costUsd).toBeCloseTo(0.027, 8)
+  })
+
+  test('blocked calls never leave the local loop and are not billed', () => {
+    // Hook-blocked calls (budget exhausted, full_page steering, repeat-query
+    // dedup) emit started+failed pairs with the block reason as output and no
+    // input on the failed event. You.com never saw them.
+    const budgetBlock = (id: string) => ({
+      type: 'tool_call',
+      name: 'you-search',
+      status: 'failed',
+      input: null,
+      metadata: { toolCallId: id },
+      output: { content: [{ type: 'text', text: 'Tool budget exhausted (15/15). Stop calling tools.' }] },
+    })
+    const steeringBlock = (id: string) => ({
+      type: 'tool_call',
+      name: 'you-search',
+      status: 'failed',
+      input: null,
+      metadata: { toolCallId: id },
+      output: { content: [{ type: 'text', text: '[For full-page depth: pick the most promising result.' }] },
+    })
+    const cost = estimateYouApiUsage([
+      {
+        type: 'tool_call',
+        name: 'you-search',
+        status: 'started',
+        input: { query: 'x' },
+        metadata: { toolCallId: 'a1' },
+      },
+      budgetBlock('a1'),
+      {
+        type: 'tool_call',
+        name: 'you-search',
+        status: 'started',
+        input: { query: 'y' },
+        metadata: { toolCallId: 'a2' },
+      },
+      steeringBlock('a2'),
+      {
+        type: 'tool_call',
+        name: 'you-contents',
+        status: 'started',
+        input: { urls: ['https://example.com/blocked'] },
+        metadata: { toolCallId: 'c1' },
+      },
+      { type: 'tool_call', name: 'you-contents', status: 'failed', input: null, metadata: { toolCallId: 'c1' } },
+    ])
+    expect(cost.searchCalls).toBe(0)
+    expect(cost.contentsCalls).toBe(0)
+    expect(cost.contentsPages).toBe(0)
+    expect(cost.costUsd).toBe(0)
+  })
+
+  test('completed events carry no input — contents URLs come from the started sibling by toolCallId', () => {
+    const cost = estimateYouApiUsage([
+      {
+        type: 'tool_call',
+        name: 'you-contents',
+        status: 'started',
+        input: { urls: ['https://example.com/a', 'https://example.com/b'] },
+        metadata: { toolCallId: 'c9' },
+      },
+      {
+        type: 'tool_call',
+        name: 'you-contents',
+        status: 'completed',
+        input: null,
+        output: { content: [{ type: 'text', text: 'page markdown' }] },
+        metadata: { toolCallId: 'c9' },
+      },
+    ])
+    expect(cost.contentsCalls).toBe(1)
+    expect(cost.contentsPages).toBe(2)
   })
 
   test('does not bill highlights-mode contents as full-page extractions', () => {
