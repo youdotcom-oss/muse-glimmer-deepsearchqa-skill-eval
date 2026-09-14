@@ -12,8 +12,10 @@ import {
   FULL_PAGE_STEERING_NOTE,
   formatExtractionFallback,
   formatExtractionSuccess,
+  formatStructuredExtraction,
   isFullPageSearch,
   narrowToGoal,
+  parseExtractionContract,
   RLM_CONFIG,
   type RlmConfig,
   runChunkedExtraction,
@@ -288,6 +290,92 @@ describe('narrowToGoal (hybrid grep: scaffold narrows, one sub-call extracts)', 
     const narrowed = narrowToGoal(text, 'artifact inventory', 20_000)
     expect(narrowed?.text.length).toBeLessThanOrEqual(20_000)
     expect(narrowed?.text).toContain('artifact 0')
+  })
+})
+
+describe('extraction contract (structured sub-call output)', () => {
+  const contract = JSON.stringify({
+    facts: ['Fact one.', 'Fact two.'],
+    goal_status: 'partially_satisfied',
+    unresolved_gaps: ['exact year'],
+    confidence: 0.6,
+  })
+
+  test('accepts a bare JSON contract', () => {
+    const parsed = parseExtractionContract(contract)
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) {
+      expect(parsed.contract.facts).toEqual(['Fact one.', 'Fact two.'])
+      expect(parsed.contract.goal_status).toBe('partially_satisfied')
+      expect(parsed.contract.confidence).toBe(0.6)
+    }
+  })
+
+  test('accepts fenced and prose-wrapped JSON (model tics)', () => {
+    const fenced = '```json\n' + contract + '\n```'
+    expect(parseExtractionContract(fenced).ok).toBe(true)
+    const wrapped = `Here is the extraction:\n${contract}\nDone.`
+    expect(parseExtractionContract(wrapped).ok).toBe(true)
+  })
+
+  test('empty facts is valid only with goal_status not_found', () => {
+    const notFound = JSON.stringify({
+      facts: [],
+      goal_status: 'not_found',
+      unresolved_gaps: ['nothing here'],
+      confidence: 0.9,
+    })
+    expect(parseExtractionContract(notFound).ok).toBe(true)
+    const emptySatisfied = JSON.stringify({ facts: [], goal_status: 'satisfied', unresolved_gaps: [], confidence: 0.9 })
+    expect(parseExtractionContract(emptySatisfied).ok).toBe(false)
+  })
+
+  test('rejects invalid goal_status, bad confidence, and non-object output', () => {
+    expect(parseExtractionContract(JSON.stringify({ facts: ['f'], goal_status: 'done', confidence: 0.5 })).ok).toBe(
+      false,
+    )
+    expect(parseExtractionContract(JSON.stringify({ facts: ['f'], goal_status: 'satisfied', confidence: 3 })).ok).toBe(
+      false,
+    )
+    expect(parseExtractionContract('no json here at all').ok).toBe(false)
+    expect(parseExtractionContract('["just", "an array"]').ok).toBe(false)
+  })
+})
+
+describe('formatStructuredExtraction (root-facing contract render)', () => {
+  const c = {
+    facts: ['Fact one.', 'Fact two.'],
+    goal_status: 'partially_satisfied' as const,
+    unresolved_gaps: ['exact year'],
+    confidence: 0.6,
+  }
+
+  test('renders status line, facts, and the gap-steering recipe', () => {
+    const text = formatStructuredExtraction(c)
+    expect(text).toContain('partially_satisfied')
+    expect(text).toContain('0.60')
+    expect(text).toContain('- Fact one.')
+    expect(text).toContain('- Fact two.')
+    expect(text).toContain('exact year')
+    expect(text).toContain('refining a query toward a gap')
+  })
+
+  test('omits the gap note when there are no gaps', () => {
+    const text = formatStructuredExtraction({ ...c, unresolved_gaps: [] })
+    expect(text).toContain('- Fact one.')
+    expect(text).not.toContain('refine')
+  })
+
+  test('not_found renders explicitly', () => {
+    const text = formatStructuredExtraction({
+      facts: [],
+      goal_status: 'not_found',
+      unresolved_gaps: ['nothing'],
+      confidence: 0.9,
+    })
+    expect(text).toContain('not_found')
+    expect(text).toContain('No facts')
+    expect(text).toContain('nothing')
   })
 })
 

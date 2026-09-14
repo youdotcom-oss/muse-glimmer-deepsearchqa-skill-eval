@@ -3,6 +3,7 @@
  * all heavy-content machinery (internal dumps, deterministic goal grep, distillation
  * sub-calls) lives inside the tools. full_page attempts on you-search are intercepted
  * at the tool_call hook with a budget-free steering note. */
+
 import type { ExtensionAPI, ExtensionContext, ToolDefinition } from '@earendil-works/pi-coding-agent'
 import { type CallToolResult, Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { type TSchema, Type } from 'typebox'
@@ -114,9 +115,11 @@ function makeSubCall(ctx: ExtensionContext, signal: AbortSignal | undefined): Su
         systemPrompt,
         messages: [{ role: 'user', content: [{ type: 'text', text: userText }], timestamp: Date.now() }],
       },
-      // Output-bound sub-calls: hard cap keeps extraction latency bounded
-      // (the prompt asks for ~1,200 tokens; the ceiling truncates at 1,500).
-      { signal, maxTokens: RLM_CONFIG.maxOutputTokens },
+      // Output-bound sub-calls: hard cap keeps extraction latency bounded,
+      // and reasoning is suppressed — sampled 4/4 JSON adherence only with
+      // reasoningEffort minimal (un-suppressed reasoning starved the output
+      // cap and truncated the contract mid-object).
+      { signal, maxTokens: RLM_CONFIG.maxOutputTokens, reasoningEffort: 'minimal' },
     )
     if (response.stopReason === 'error' || response.errorMessage) {
       throw new Error(response.errorMessage ?? `sub-call stopReason ${response.stopReason}`)
@@ -162,6 +165,9 @@ function buildToolDefinition(tool: DiscoveredTool, getDumpStore: () => DumpStore
       // Defensive: the tool_call hook steers full_page away; this guarantees
       // you-search MCP calls are highlights even if one slips through.
       if (tool.name === 'you-search') delete (mcpArgs as Record<string, unknown>).extraction
+      // Defensive pin: contents is markdown-only — html/metadata formats would
+      // bloat the sub-call input, and our chunk sizing is calibrated to markdown.
+      if (tool.name === 'you-contents') (mcpArgs as Record<string, unknown>).formats = ['markdown']
       try {
         const result = await callTool(tool.name, mcpArgs)
         const adapted = toToolResult(result)
