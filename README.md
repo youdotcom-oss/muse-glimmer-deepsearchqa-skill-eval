@@ -84,7 +84,40 @@ bun run check          # typecheck + tests
 
 ## Results
 
-### Full run — 2026-09-12 (cap15 + high thinking + truncation; current defaults)
+### Full run — 2026-09-14 (RLM v5 config: extension distillation + official grading)
+
+Config: RLM depth-1 extraction extension (contract distillation, HTML retry, grace window,
+semantic dedup, full_page steering) + generalized skill v2 + judge `deepseek/deepseek-v4.1-flash`
+with official rater semantics. **Metric + judge changed this run**: pass = official Fully Correct
+category (all parts found, zero excessive); not comparable to earlier F1>=0.8 rows. Full
+architecture: see the diagram at the top of this README and `docs/eval-adaptations.md`.
+
+| | |
+| --- | --- |
+| Model | `meta/muse-glimmer-30b` (OpenRouter) |
+| Thinking level | `high` |
+| Tool budget | 15 + 4-call gap-directed grace window; results distilled by RLM sub-calls |
+| Trials / tasks | 2700 trials / 900 tasks (K=3) |
+| **Average F1 (raw) — primary metric** | **0.6910** |
+| Average F1 (adjusted, 2688 gradable trials) | 0.6941 |
+| **Fully Correct pass rate** (all parts, zero excessive) | **52.8%** (1425/2700) |
+| Fully Correct pass@K (task-level, any-of-3) | 65.9% (593/900) |
+| FC per task (K=3): 0/3 / 1/3 / 2/3 / 3/3 | 307 / 108 / 138 / 347 |
+| Ungradable | 12 trials (3 tasks missing gold in dataset) |
+| Trial statuses | 0 failed / 0 timed out — all 2700 graded |
+
+Cost and process:
+
+| Metric | Value |
+| --- | --- |
+| Total cost | $246.96 ($0.0915/trial, $0.27/task) |
+| Model cost | $49.28 |
+| You.com API cost | $197.68 |
+| Avg end-to-end latency / trial | 268s |
+| Tool-call attempts / trial | 42.3 (incl. 10,360 unbilled steering/dedup/budget blocks) |
+| Error events | 0 |
+
+### Full run — 2026-09-12 (pre-extension: truncation-only config; old judge + old pass definition)
 
 | | |
 | --- | --- |
@@ -116,11 +149,17 @@ Cost and process (from `data/summary.json`):
 
 Progress across the three configurations evaluated on this model (all 900 tasks, K=3):
 
-| Run | Trial deaths | Avg F1 (raw) | Trial pass rate | pass@K |
+| Run | Trial deaths | Avg F1 (raw) | Pass rate | pass@K |
 | --- | --- | --- | --- | --- |
 | 2026-09-11 initial (registry `maxTokens: 117964`, cap 10, medium) | 37.3% (provider 400s) | 0.4262 | 37.0% | 53.22% |
 | 2026-09-11 + maxTokens fix + retry (cap 10, medium) | 22.2% | 0.5341 | 46.4% | 66.78% |
-| **2026-09-12 cap15 + high thinking + truncation (current defaults)** | **0.2%** | **0.6653** | **58.0%** | **71.22%** |
+| 2026-09-12 cap15 + high thinking + truncation (pre-extension) | 0.2% | 0.6653 | 58.0% | 71.22% |
+| **2026-09-14 RLM v5 + official grading (current defaults)** | **0%** | **0.6910** | **52.8%** (FC) | **65.9%** (FC) |
+
+**Metric break at the last row**: pass-rate/pass@K switched from F1>=0.8 to the official
+Fully-Correct category and the judge changed (v4-flash -> v4.1-flash). F1 (the primary ranking
+metric, unchanged definition) improved 0.6653 -> 0.6910 despite the stricter binary definition.
+For reference on the same tasks, the F1>=0.8 trial rate in this run was 62.5% (1687/2700).
 
 Observations for this model, not cross-model conclusions: the A/B-validated levers (15-call budget, high thinking) plus per-result truncation eliminated the trial-death tiers — 99.8% of trials now complete and produce an answer, up from 62.8% in the first run. The remaining failures are almost entirely answer-quality, not harness: fully incorrect 612 (final-step reasoning — barely movable by budget or thinking per the A/B buckets), incomplete set enumeration 374, correct-but-extraneous 131. The next frontier is the model itself or a stronger reasoning/synthesis loop, not harness mechanics.
 
