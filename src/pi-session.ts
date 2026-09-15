@@ -16,6 +16,9 @@ interface CreatePiSessionOptions {
   systemPrompt: string
   skillPath: string
   extensionPath: string
+  /** Extra pi extension entrypoints to load alongside extensionPath (e.g. the
+   * vendored @hicaru/pi-rlm). Optional; the pure-port path passes none. */
+  extraExtensionPaths?: string[]
   cwd?: string
 }
 
@@ -61,7 +64,7 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
     agentDir: getAgentDir(),
     settingsManager,
     additionalSkillPaths: [options.skillPath],
-    additionalExtensionPaths: [options.extensionPath],
+    additionalExtensionPaths: [options.extensionPath, ...(options.extraExtensionPaths ?? [])],
     noExtensions: false,
     noSkills: true,
     noPromptTemplates: true,
@@ -82,7 +85,35 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
     settingsManager,
   })
 
+  // The SDK path never fires `session_start`: only print/rpc/interactive modes call
+  // bindExtensions. pi-rlm registers its `repl` tool in a session_start handler (the
+  // `rlm` tool registers at factory time), so drive the lifecycle when extra
+  // extensions are loaded. Pure-port sessions (no extras) keep their prior
+  // lifecycle, preserving comparability with recorded control runs.
+  if (options.extraExtensionPaths?.length) {
+    await session.bindExtensions({
+      mode: 'print',
+      onError: (error) => {
+        process.stderr.write(`Extension error (${error.extensionPath}): ${String(error.error)}\n`)
+      },
+    })
+  }
+
   return { session }
+}
+
+/** Tear a session down through pi's real lifecycle: emit `session_shutdown`
+ * (which the SDK's `dispose()` never does) so extensions release resources —
+ * pi-rlm's Python sandbox, background tasks, and skill-state flush — then
+ * dispose. Without this, pi-rlm leaves the sandbox alive and the adapter
+ * process never exits. Best-effort: teardown must not mask a trial result. */
+export async function disposePiSession(session: PiSessionResult['session']): Promise<void> {
+  try {
+    await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' })
+  } catch {
+    // Teardown is best-effort.
+  }
+  session.dispose()
 }
 
 export function collectFinalMessage(session: PiSessionResult['session']): string {

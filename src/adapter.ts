@@ -1,5 +1,12 @@
+import { readStringEnv } from './env.ts'
 import { type JsonObject, readStdin, writeStdout } from './io.ts'
-import { collectFinalError, collectFinalMessage, createPiSession, summarizeUsage } from './pi-session.ts'
+import {
+  collectFinalError,
+  collectFinalMessage,
+  createPiSession,
+  disposePiSession,
+  summarizeUsage,
+} from './pi-session.ts'
 import { estimateYouApiUsage } from './you-cost.ts'
 
 interface AdapterInput {
@@ -15,6 +22,11 @@ interface TrajectoryEvent extends Record<string, unknown> {
 type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 const HARNESS_MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'tool'])
+/** Vendored pi-rlm scaffold (pinned in package.json). Loaded by default so the
+ * experiment config is reproducible from a bare `bun run eval`; PI_RLM=0
+ * restores the pure-port arm (no extra extension, no repl/rlm in the allowlist). */
+const PI_RLM_EXTENSION_PATH = new URL('../node_modules/@hicaru/pi-rlm/src/index.ts', import.meta.url).pathname
+const PI_RLM_TOOL_NAMES = ['repl', 'rlm']
 const SYSTEM_PROMPT =
   "You are an autonomous research agent. Answer the user's question using the available tools. " +
   'Ground factual claims in sources, include inline citations, and list sources at the end. Do not ask clarifying questions.'
@@ -31,6 +43,9 @@ async function runAdapter(input: AdapterInput): Promise<object> {
   const thinkingLevel = readThinkingLevel(input.config?.thinkingLevel)
   const skillPath = String(input.config?.skillPath ?? new URL('../skills/you-web/SKILL.md', import.meta.url).pathname)
   const extensionPath = new URL('./extension.ts', import.meta.url).pathname
+  const rlmEnabled = readStringEnv('PI_RLM', '1') !== '0'
+  const extraExtensionPaths = rlmEnabled ? [readStringEnv('PI_RLM_EXTENSION', PI_RLM_EXTENSION_PATH)] : []
+  const tools = rlmEnabled ? ['you-search', 'you-contents', ...PI_RLM_TOOL_NAMES] : ['you-search', 'you-contents']
   const prompt = input.task.prompts.join('\n\n')
   const { events, subscribe } = createTrajectoryCollector()
 
@@ -38,10 +53,11 @@ async function runAdapter(input: AdapterInput): Promise<object> {
     model,
     provider,
     thinkingLevel,
-    tools: ['you-search', 'you-contents'],
+    tools,
     systemPrompt: SYSTEM_PROMPT,
     skillPath,
     extensionPath,
+    extraExtensionPaths,
     cwd: input.cwd,
   })
 
@@ -98,7 +114,7 @@ async function runAdapter(input: AdapterInput): Promise<object> {
       },
     }
   } finally {
-    session.dispose()
+    await disposePiSession(session)
   }
 }
 
