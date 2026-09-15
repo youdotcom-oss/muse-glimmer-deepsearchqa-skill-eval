@@ -15,6 +15,10 @@ interface TrajectoryEvent extends Record<string, unknown> {
 type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
 const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh'])
 const HARNESS_MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'tool'])
+const SYSTEM_PROMPT =
+  "You are an autonomous research agent. Answer the user's question using the available tools. " +
+  'Ground factual claims in sources, include inline citations, and list sources at the end. Do not ask clarifying questions.'
+
 if (import.meta.main) {
   const input = (await readStdin()) as AdapterInput
   writeStdout(await runAdapter(input))
@@ -35,6 +39,7 @@ async function runAdapter(input: AdapterInput): Promise<object> {
     provider,
     thinkingLevel,
     tools: ['you-search', 'you-contents'],
+    systemPrompt: SYSTEM_PROMPT,
     skillPath,
     extensionPath,
     cwd: input.cwd,

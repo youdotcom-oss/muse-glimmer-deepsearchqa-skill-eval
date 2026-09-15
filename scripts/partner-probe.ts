@@ -130,6 +130,7 @@ async function agentProbes(outDir: string): Promise<void> {
       provider: 'openrouter',
       thinkingLevel: 'high',
       tools: ['you-search'], // match the partner's single-tool surface
+      systemPrompt: "You are an assistant with web search. Answer the user's question using the search tool.",
       skillPath,
       extensionPath,
     })

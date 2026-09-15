@@ -13,6 +13,7 @@ interface CreatePiSessionOptions {
   provider: string
   thinkingLevel: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
   tools: string[]
+  systemPrompt: string
   skillPath: string
   extensionPath: string
   cwd?: string
@@ -66,6 +67,7 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
+    systemPromptOverride: () => options.systemPrompt,
   })
   await loader.reload()
 
