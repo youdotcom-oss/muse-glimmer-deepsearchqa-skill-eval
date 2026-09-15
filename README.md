@@ -84,6 +84,50 @@ bun run check          # typecheck + tests
 
 ## Results
 
+### 50-task sample — 2026-09-15 (`@youdotcom-oss/pi@0.6.0` evaluated as the harness extension)
+
+Basis: the upstream You.com package replaces the custom MCP bridge (commit `4d94c81`).
+It is evaluated **as a whole**: the extension registers `you-search`, `you-contents`,
+`you-research`, `you-finance`, `you-discover`, `you-search-free`, `you-balance` and
+`searchDocs`, and its bundled skills (`you-web`, `you-research`, `you-finance`,
+`you-free`, `you-discover`) surface natively through `read`. `bash`/`edit`/`write`
+excluded; pi compaction enabled (required — see below); no tool cap.
+`meta/muse-glimmer-30b`, thinking `high`, 50 tasks K=1, official grading.
+Artifacts: `data/ab/youdotcom-pi-capnone-high-*` (gitignored).
+
+| | |
+| --- | --- |
+| Model | `meta/muse-glimmer-30b` (OpenRouter) |
+| Thinking level | `high` |
+| Trials / tasks | 50 / 50 (K=1) |
+| Tool budget | none (package self-limits via skill guidance) |
+| **Avg F1 (raw) — primary metric** | **0.5421** |
+| **Fully Correct pass rate** | **44.0%** (22/50) |
+| pass@K (task-level, K=1) | 44.0% |
+| Trial statuses | 0 failed / 0 timed out / 0 errors |
+
+Cost and process (from `data/ab/youdotcom-pi-capnone-high-summary.json`):
+
+| Metric | Value |
+| --- | --- |
+| Total cost | $4.33 ($0.0865/trial) |
+| Model cost | $1.93 |
+| You.com API cost | $2.40 |
+| Avg end-to-end latency / trial | 354s |
+| Tool-call events / trial | 29.6 (19 failed) |
+| Tool mix (events) | you-search 890, you-contents 232, you-research 208, you-search-free 138, read 8, you-finance 4, searchDocs 2 |
+
+Paired against the recorded 50-task controls: vs pure-port `cap15-high` mean ΔF1
+**−0.146** (14 gains / 22 losses / 14 ties); vs RLM v5 **−0.274** (5 / 22 / 23).
+
+Observations for this run, not cross-model conclusions: the package's own surface
+works unmodified once compaction is on, but the model mostly ignored the bundled
+`you-web` skill (`read` used on only 4 of 50 trials) and leaned on raw search
+(445 `you-search` + 69 `you-search-free`); four trials burned a 55-search outlier
+because there is no cap. Compaction is load-bearing: the same 1-task smoke without
+it died on a 154k-token 400 overflow with no answer. The 0.6647 pure-port control
+and v5 0.8054 sample above remain the stronger recorded configurations.
+
 ### RLM experiment — FAILED (2026-09-15, `@hicaru/pi-rlm@0.3.21` vendored as scaffold)
 
 Config: pure MCP port (`8a7588d`) + vendored `@hicaru/pi-rlm@0.3.21` as the RLM
