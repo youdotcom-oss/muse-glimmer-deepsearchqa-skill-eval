@@ -34,7 +34,11 @@ const DEFAULT_PI_PROVIDER_MAX_RETRY_DELAY_MS = 60_000
 
 export function createPiSettingsManager(): ReturnType<typeof SettingsManager.inMemory> {
   return SettingsManager.inMemory({
-    compaction: { enabled: false },
+    // Enabled: the package has no result-size cap, and raw you-search payloads
+    // overflow the model window on multi-hop tasks (observed 400 at 154k tokens
+    // with compaction off). Compaction is pi's normal behavior and the package
+    // expects it; the previous harness disabled it to protect RLM trials.
+    compaction: { enabled: true },
     retry: {
       enabled: true,
       maxRetries: 3,
