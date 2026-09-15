@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -30,6 +31,22 @@ const DEFAULT_PI_PROVIDER_TIMEOUT_MS = 180_000
 const DEFAULT_PI_PROVIDER_MAX_RETRIES = 2
 const DEFAULT_PI_PROVIDER_MAX_RETRY_DELAY_MS = 60_000
 
+/** pi surfaces a skill's body only when `read`/`bash` is in the tool allowlist
+ * (buildSystemPrompt's `skillFileReadTool` gate), and our allowlist is
+ * you-search/you-contents (+repl/rlm). `additionalSkillPaths` therefore loads the
+ * SKILL.md into the resource loader but the model never sees a line of it. Inline
+ * the body (frontmatter stripped) so the skill is actually applied. */
+function systemPromptWithSkill(systemPrompt: string, skillPath: string): string {
+  try {
+    const body = readFileSync(skillPath, 'utf8')
+      .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
+      .trim()
+    return body.length > 0 ? `${systemPrompt}\n\n${body}` : systemPrompt
+  } catch {
+    return systemPrompt
+  }
+}
+
 export function createPiSettingsManager(): ReturnType<typeof SettingsManager.inMemory> {
   return SettingsManager.inMemory({
     compaction: { enabled: false },
@@ -59,6 +76,7 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
   if (!model) throw new Error(`Model ${options.provider}/${options.model} not found in pi registry`)
 
   const settingsManager = createPiSettingsManager()
+  const effectiveSystemPrompt = systemPromptWithSkill(options.systemPrompt, options.skillPath)
   const loader = new DefaultResourceLoader({
     cwd: options.cwd ?? process.cwd(),
     agentDir: getAgentDir(),
@@ -70,7 +88,7 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    systemPromptOverride: () => options.systemPrompt,
+    systemPromptOverride: () => effectiveSystemPrompt,
   })
   await loader.reload()
 

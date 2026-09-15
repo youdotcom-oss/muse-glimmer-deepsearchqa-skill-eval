@@ -33,6 +33,17 @@ Build answers from read evidence, not snippets alone. Answer with citations from
 5. For a purely factual question with no named source, `knowledge: "core"` can return licensed factual answers alongside web results.
 6. Budget ~6-8 searches for hard multi-hop questions; stay within 10 total tool calls. Never finish with an empty response.
 
+### Phase 2b: Orchestrate in the REPL (when `repl` is available)
+
+If a `repl` tool is present, do not reason over raw search output in your own context — delegate:
+
+1. Gather candidate sources with `you-search` / `you-contents`.
+2. In `repl({code})`, call `llm_query(prompt)` (embed the collected text in the prompt) or
+   `llm_batch([...])` to extract exact facts, figures, dates, and quotes; use `rlm_query(task=...)`
+   for a dependent multi-step study. These return a Task — `await_task(t)` collects the result.
+3. Cross-check conflicting values in the sandbox and carry only the resolved facts into your answer.
+   Keep working state in the REPL, not in the answer.
+
 ### Phase 3: Verify
 
 - Cross-check key facts across at least two independent sources.
