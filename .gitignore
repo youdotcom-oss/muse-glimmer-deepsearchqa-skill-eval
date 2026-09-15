@@ -18,5 +18,3 @@ models-store.json
 data/ab/
 !data/partner-probe/
 
-# pi-rlm runtime cache (repo-cwd side effect)
-.rlm/

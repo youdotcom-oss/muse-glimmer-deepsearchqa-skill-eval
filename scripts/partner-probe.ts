@@ -123,15 +123,13 @@ async function agentProbes(outDir: string): Promise<void> {
   const outPath = join(outDir, 'agent-probes.jsonl')
   writeFileSync(outPath, '')
   for (let run = 1; run <= PROBE_RUNS; run += 1) {
-    const skillPath = new URL('../skills/you-web/SKILL.md', import.meta.url).pathname
-    const extensionPath = new URL('../src/extension.ts', import.meta.url).pathname
+    const extensionPath = new URL('../node_modules/@youdotcom-oss/pi/main.ts', import.meta.url).pathname
     const { session } = await createPiSession({
       model: MODEL,
       provider: 'openrouter',
       thinkingLevel: 'high',
       tools: ['you-search'], // match the partner's single-tool surface
       systemPrompt: "You are an assistant with web search. Answer the user's question using the search tool.",
-      skillPath,
       extensionPath,
     })
     const calls: ProbeCall[] = []

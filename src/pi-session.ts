@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs'
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -13,13 +12,15 @@ interface CreatePiSessionOptions {
   model: string
   provider: string
   thinkingLevel: 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-  tools: string[]
+  /** Tool allowlist; omit to enable pi's defaults plus every extension tool. */
+  tools?: string[]
+  /** Tools to disable after the allowlist/defaults are applied. */
+  excludeTools?: string[]
   systemPrompt: string
-  skillPath: string
+  /** Optional extra skill path; the @youdotcom-oss/pi package contributes its own
+   * skills through `resources_discover`, which bindExtensions runs below. */
+  skillPath?: string
   extensionPath: string
-  /** Extra pi extension entrypoints to load alongside extensionPath (e.g. the
-   * vendored @hicaru/pi-rlm). Optional; the pure-port path passes none. */
-  extraExtensionPaths?: string[]
   cwd?: string
 }
 
@@ -30,22 +31,6 @@ interface PiSessionResult {
 const DEFAULT_PI_PROVIDER_TIMEOUT_MS = 180_000
 const DEFAULT_PI_PROVIDER_MAX_RETRIES = 2
 const DEFAULT_PI_PROVIDER_MAX_RETRY_DELAY_MS = 60_000
-
-/** pi surfaces a skill's body only when `read`/`bash` is in the tool allowlist
- * (buildSystemPrompt's `skillFileReadTool` gate), and our allowlist is
- * you-search/you-contents (+repl/rlm). `additionalSkillPaths` therefore loads the
- * SKILL.md into the resource loader but the model never sees a line of it. Inline
- * the body (frontmatter stripped) so the skill is actually applied. */
-function systemPromptWithSkill(systemPrompt: string, skillPath: string): string {
-  try {
-    const body = readFileSync(skillPath, 'utf8')
-      .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
-      .trim()
-    return body.length > 0 ? `${systemPrompt}\n\n${body}` : systemPrompt
-  } catch {
-    return systemPrompt
-  }
-}
 
 export function createPiSettingsManager(): ReturnType<typeof SettingsManager.inMemory> {
   return SettingsManager.inMemory({
@@ -76,19 +61,18 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
   if (!model) throw new Error(`Model ${options.provider}/${options.model} not found in pi registry`)
 
   const settingsManager = createPiSettingsManager()
-  const effectiveSystemPrompt = systemPromptWithSkill(options.systemPrompt, options.skillPath)
   const loader = new DefaultResourceLoader({
     cwd: options.cwd ?? process.cwd(),
     agentDir: getAgentDir(),
     settingsManager,
-    additionalSkillPaths: [options.skillPath],
-    additionalExtensionPaths: [options.extensionPath, ...(options.extraExtensionPaths ?? [])],
+    additionalSkillPaths: options.skillPath ? [options.skillPath] : [],
+    additionalExtensionPaths: [options.extensionPath],
     noExtensions: false,
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    systemPromptOverride: () => effectiveSystemPrompt,
+    systemPromptOverride: () => options.systemPrompt,
   })
   await loader.reload()
 
@@ -99,32 +83,28 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
     modelRuntime,
     resourceLoader: loader,
     tools: options.tools,
+    excludeTools: options.excludeTools,
     sessionManager: SessionManager.inMemory(),
     settingsManager,
   })
 
-  // The SDK path never fires `session_start`: only print/rpc/interactive modes call
-  // bindExtensions. pi-rlm registers its `repl` tool in a session_start handler (the
-  // `rlm` tool registers at factory time), so drive the lifecycle when extra
-  // extensions are loaded. Pure-port sessions (no extras) keep their prior
-  // lifecycle, preserving comparability with recorded control runs.
-  if (options.extraExtensionPaths?.length) {
-    await session.bindExtensions({
-      mode: 'print',
-      onError: (error) => {
-        process.stderr.write(`Extension error (${error.extensionPath}): ${String(error.error)}\n`)
-      },
-    })
-  }
+  // The SDK path never fires `session_start`/`resources_discover`: only
+  // print/rpc/interactive modes call bindExtensions. @youdotcom-oss/pi publishes
+  // its bundled skills through `resources_discover`, so drive the lifecycle.
+  await session.bindExtensions({
+    mode: 'print',
+    onError: (error) => {
+      process.stderr.write(`Extension error (${error.extensionPath}): ${String(error.error)}\n`)
+    },
+  })
 
   return { session }
 }
 
 /** Tear a session down through pi's real lifecycle: emit `session_shutdown`
  * (which the SDK's `dispose()` never does) so extensions release resources —
- * pi-rlm's Python sandbox, background tasks, and skill-state flush — then
- * dispose. Without this, pi-rlm leaves the sandbox alive and the adapter
- * process never exits. Best-effort: teardown must not mask a trial result. */
+ * @youdotcom-oss/pi closes its pooled MCP clients there — then dispose.
+ * Best-effort: teardown must not mask a trial result. */
 export async function disposePiSession(session: PiSessionResult['session']): Promise<void> {
   try {
     await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' })
