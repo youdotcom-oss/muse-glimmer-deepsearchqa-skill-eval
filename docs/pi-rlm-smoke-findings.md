@@ -61,3 +61,56 @@ Cheap sequence before any 50-task run:
 
 Only if the scaffold still does not engage is a search seam (patch the vendored sandbox
 bridge with a `web_search()` host handler) or a purpose-built extension worth pricing.
+
+## Follow-up smokes (same task, integration fixes applied)
+
+### Smoke 2 — `2ac603e` (skill inlined; autoSeedCwd/contextLoader off)
+
+| tool | calls |
+| --- | --- |
+| you-search | 34 (15 completed) |
+| rlm | 2 |
+| you-contents | 2 |
+
+F1 1.0, **$0.1685**, 111s. The root used pi-rlm's top-level `rlm` tool (a recursive
+child engine over the sandbox `context`, i.e. repo files), not `repl`. With an empty
+context it searched for the crime-index terms, found nothing, and returned
+"no files loaded" after 56s. Worse, the final answer cited a SkillState note distilled
+by smoke 1 (`~/.pi/agent/rlm-skillstate.json`) — cross-trial contamination confirmed.
+
+Fixes (`d2941d6`): expose only `repl`; isolate `PI_CODING_AGENT_DIR` per adapter process.
+
+### Smoke 3 — `d2941d6` (repl only, SkillState isolated)
+
+| tool | calls |
+| --- | --- |
+| repl | 56 events (28 cells) |
+| you-search | 48 events (15 completed) |
+| you-contents | 8 events (4 completed) |
+
+**F1 0.0**, **$0.2956/trial (over the $0.18 ceiling)**, 146s. The scaffold finally
+engaged — then hurt. Cell 2 asked `llm_query` to "list OECD countries ... and give the
+crime-index changes" with no source text in the prompt; `llm_query` has no web access,
+so the workers confabulated. Later cells called `search()`/`grep_context()` over the
+empty sandbox context. The root answered "Ireland" (wrong; smoke 1/2 found New Zealand).
+
+## Updated conclusion
+
+pi-rlm's REPL only pays off when the sandbox already holds the evidence. This harness
+has no web→sandbox seam, so when the scaffold engages the root either (a) runs `rlm`
+over an empty repo context or (b) delegates to `llm_query` with no embedded evidence —
+both waste real money, and (b) is actively harmful. The smoke-3 cost also breaches the
+experiment's $0.18/trial ceiling.
+
+Do **not** run the 50-task sample as configured. Options, cheapest first:
+
+1. **Abandon pi-rlm** and record the ceiling conclusion at the mechanism level
+   (engaged usage is worse and over budget).
+2. **Build the web seam in our extension** (no package fork): persist each
+   `you-search`/`you-contents` result to files under a run-local evidence dir, return
+   the path in the tool result, and have the skill instruct `add_context(<dir>)` then
+   `map_files`/`rlm_query(paths=...)` so sub-LLMs read real evidence. This is the
+   faithful "RLM over web" integration and the only path that can plausibly beat raw
+   MCP.
+3. **Port a purpose-built mini-REPL** into our own extension. Largest effort, and it
+   re-tests the v5-style scaffold the v6→v8 series already showed degrades.
