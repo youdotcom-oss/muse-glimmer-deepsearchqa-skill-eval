@@ -281,6 +281,40 @@ and FC regressed vs v5; with two changed variables and the n=50 band (±3–4 ta
 xhigh-root-vs-gate attribution and the retry decision need a decomposition run (v7 gate at
 THINKING_LEVEL=high) before any full-run commitment.
 
+### 50-task sample re-run — 2026-09-15 (RLM v8: sub_queries fan-out + schema-enforced sub-calls + grep-explore, commits 4115107/31a9482)
+
+Same 50 tasks; root at THINKING_LEVEL=high (v7's xhigh reverted — one design change per run vs v5, nominally).
+Changes since v5: (1) `you-search({query, sub_queries≤4, task})` fan-out — extension fires each facet's MCP
+search + one-shot distill in Promise.all, returns UN-MERGED sections with advisory sufficient/targets; (2)
+sub-call output schema-constrained via response_format json_schema (probed live for this model via OpenRouter);
+(3) oversized you-contents docs explored by a bounded sub-model Bun-Shell grep loop (3 rounds max) then one
+region distill; (4) regex machinery deleted (narrowToGoal/STOP_WORDS, parse/salvage, buildDefaultGoal); (5)
+skill rewritten for the new signature.
+
+| | RLM v5 | RLM v7 | **RLM v8** |
+| --- | --- | --- | --- |
+| Avg F1 (raw) | **0.8054** | 0.7054 | 0.2626 |
+| Pass (Fully Correct) | **0.64** | 0.52 | 0.12 (6/50) |
+| Latency / trial | 227s | 413s | 128s |
+| Cost / trial | $0.088 | $0.087 | $0.102 |
+| Tool calls / trial | 42.5 | 42.0 | 50.7 |
+| Completed root searches | 689 | 698 | 1,141 |
+| Root calls with sub_queries | — | — | 13/1,141 (fan-out barely fired) |
+| Facts per sub-query (fanout) | — | — | 5.5 mean |
+| Root you-contents calls | ~180 | 136 | 127 (8 grep-explore batches, rounds 1–3) |
+
+Mechanism verified end-to-end (all 50 trials completed, 0 rlmError, schema adherence ~99.7%, grep-explore fired
+8 times with 1–3 rounds), but the result is a collapse, not a regression: 32 big paired regressions vs v5, 2
+gains. Observations for this run: fan-out canNOT explain the drop (13/1,141 calls used it); the dominant path
+was single-query searches distilled under the NEW regime — strict response_format json_schema under
+reasoningEffort minimal with a prompt that lost the explicit "preserve exact figures/names/URLs" instruction.
+Answer inspection shows well-formed but vaguer answers (≈ ranges vs exact figures), wrong candidate universes,
+and premature "cannot be verified" — an extraction-CONTENT collapse, not a formatting one; constrained
+sampling degrading this model's span extraction is the leading suspect, possibly interacting with suppressed
+reasoning. Notably latency fell (128s) and searches rose 66% — the root searched more and worked less deep.
+Next: decomposition run isolating response_format (v8 harness, schema OFF, prose prompts) before any further
+design iteration; the v7-vs-v8 diff bundles too many variables to attribute without it.
+
 ### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
 
 Same 50 tasks; changes since v2: Jaccard paraphrase dedup (>=0.8), zero-result passthrough
