@@ -84,6 +84,31 @@ bun run check          # typecheck + tests
 
 ## Results
 
+### RLM experiment — FAILED (2026-09-15, `@hicaru/pi-rlm@0.3.21` vendored as scaffold)
+
+Config: pure MCP port (`8a7588d`) + vendored `@hicaru/pi-rlm@0.3.21` as the RLM
+scaffold, `meta/muse-glimmer-30b`, thinking `high`, `MAX_TOOL_CALLS=15`. A 1-task
+smoke was run before the planned 50-task sample; **the 50-task run was never
+executed** because the scaffold failed its smoke gate (`docs/pi-rlm-smoke-findings.md`,
+commits `0cedb1b`..`e00e0a6`).
+
+- The package wired but never engaged as shipped: the `you-web` skill body never
+  reached the model (pi surfaces skills only when `read`/`bash` is in the tool
+  allowlist), and `session_start`/`session_shutdown` are not emitted on the SDK path,
+  so pi-rlm's `repl` tool was never registered.
+- After integration fixes (inline the skill, drive the lifecycle, expose only `repl`,
+  isolate pi-rlm's global SkillState), the scaffold engaged and was
+  **counterproductive**: smoke 3 scored **F1 0.0 at $0.2956/trial** — over the
+  experiment's $0.18/trial ceiling — because the sandbox has no web seam. `llm_query`
+  is tool-less, so the root delegated with no evidence embedded and the workers
+  confabulated (answered "Ireland"; the raw-snippet smoke answered "New Zealand", F1 1.0).
+
+Verdict: **FAILED**. `@hicaru/pi-rlm` and the v6–v8 style scaffold machinery are
+removed. The harness extension is now the upstream `@youdotcom-oss/pi` package
+(v0.6.0) with its bundled `you-web` skill, replacing the custom `src/extension.ts`
+MCP bridge and the local `skills/you-web`. The pure-MCP and RLM v5 rows below remain
+the recorded baselines.
+
 ### Full run — 2026-09-14 (RLM v5 config: extension distillation + official grading)
 
 Config: RLM depth-1 extraction extension (contract distillation, HTML retry, grace window,

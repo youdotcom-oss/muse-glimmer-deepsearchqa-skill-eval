@@ -114,3 +114,9 @@ Do **not** run the 50-task sample as configured. Options, cheapest first:
    MCP.
 3. **Port a purpose-built mini-REPL** into our own extension. Largest effort, and it
    re-tests the v5-style scaffold the v6→v8 series already showed degrades.
+
+## VERDICT: FAILED
+
+The @hicaru/pi-rlm experiment is closed as failed and the package plus its wiring are
+removed. The harness extension is now the upstream `@youdotcom-oss/pi` package,
+evaluated as a whole (its own tools and bundled skills).
