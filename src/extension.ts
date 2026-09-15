@@ -9,6 +9,11 @@ const CLIENT_INFO = { name: 'deepsearchqa-skill-eval', version: '0.0.0' } as con
 const ANY_OBJECT = Type.Object({}, { additionalProperties: true })
 const TOOL_NAMES = new Set(['you-search', 'you-contents'])
 
+/** pi-rlm registers `repl` and `rlm`. They orchestrate over evidence instead of
+ * acquiring it, so they are exempt from the call cap; the search/read budget
+ * stays identical to the pure-port control. See tests/budget-policy.test.ts. */
+const ORCHESTRATION_TOOLS = new Set(['repl', 'rlm'])
+
 interface DiscoveredTool {
   name: string
   description?: string
@@ -116,8 +121,12 @@ export default async function youToolsExtension(pi: ExtensionAPI): Promise<void>
   // block reason; one-time mid-budget check-in hint; per-result truncation
   // (MAX_TOOL_RESULT_CHARS, default 12000) so accumulated tool content cannot
   // push the model past its context window. See src/budget-policy.ts.
-  const tracker = createBudgetTracker(readMaxToolCalls(process.env), readMaxToolResultChars(process.env))
-  pi.on('tool_call', () => tracker.onToolCall())
+  const tracker = createBudgetTracker(
+    readMaxToolCalls(process.env),
+    readMaxToolResultChars(process.env),
+    ORCHESTRATION_TOOLS,
+  )
+  pi.on('tool_call', (event) => tracker.onToolCall(event.toolName))
   pi.on('tool_result', (event) => tracker.onToolResult(event.content))
 
   pi.on('session_shutdown', () => {

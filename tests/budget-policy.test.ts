@@ -46,6 +46,26 @@ describe('createBudgetTracker.onToolCall', () => {
   })
 })
 
+describe('createBudgetTracker exempt tools', () => {
+  test('exempt tools bypass the call cap entirely and do not consume budget', () => {
+    const tracker = createBudgetTracker(2, 12_000, new Set(['repl', 'rlm']))
+    // Orchestration turns are free and unbounded.
+    for (let i = 0; i < 10; i += 1) expect(tracker.onToolCall('repl')).toBeUndefined()
+    // The search budget is independent of the exempt calls: 2 base, then hard block.
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')?.block).toBe(true)
+    // Exempt tools stay available even after the search cap is hit.
+    expect(tracker.onToolCall('rlm')).toBeUndefined()
+  })
+
+  test('no exempt set (pure-port default) still charges every tool against the cap', () => {
+    const tracker = createBudgetTracker(1, 12_000)
+    expect(tracker.onToolCall('repl')).toBeUndefined()
+    expect(tracker.onToolCall('you-search')?.block).toBe(true)
+  })
+})
+
 describe('createBudgetTracker.onToolResult', () => {
   test('fires the mid-budget check-in exactly once, on the midpoint result', () => {
     const tracker = createBudgetTracker(4, 12_000)

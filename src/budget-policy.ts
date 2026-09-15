@@ -66,8 +66,10 @@ export function truncateText(text: string, maxChars: number): string {
 }
 
 export interface BudgetTracker {
-  /** Returns the block result when the call exceeds the budget. */
-  onToolCall(): { block: true; reason: string } | undefined
+  /** Returns the block result when the call exceeds the budget. `toolName`
+   * selects the exempt set: orchestration tools are never charged against the
+   * cap. */
+  onToolCall(toolName?: string): { block: true; reason: string } | undefined
   /** Truncates oversized text blocks and, at the budget midpoint, appends the
    * check-in hint once. Returns the mutated content, or undefined when
    * unchanged. Non-text blocks pass through untouched. Generic so pi's own
@@ -79,12 +81,20 @@ function isOversizedText(block: ContentBlock, maxChars: number): block is Conten
   return block.type === 'text' && typeof block.text === 'string' && block.text.length > maxChars
 }
 
-export function createBudgetTracker(maxCalls: number, maxResultChars: number): BudgetTracker {
+export function createBudgetTracker(
+  maxCalls: number,
+  maxResultChars: number,
+  exemptTools: ReadonlySet<string> = new Set(),
+): BudgetTracker {
   let callsUsed = 0
   let checkInPending = false
   const midpoint = Math.ceil(maxCalls / 2)
   return {
-    onToolCall() {
+    onToolCall(toolName?: string) {
+      // Orchestration tools (pi-rlm's repl/rlm) drive the scaffold, not evidence
+      // acquisition: exempt from the call cap only, so searches and you-contents
+      // keep their pure-port budget while the root can iterate freely.
+      if (toolName !== undefined && exemptTools.has(toolName)) return undefined
       if (callsUsed >= maxCalls) return { block: true, reason: buildBudgetExhaustedReason(maxCalls) }
       callsUsed += 1
       if (callsUsed === midpoint) checkInPending = true
