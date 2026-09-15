@@ -1,3 +1,7 @@
+import { copyFileSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { getAgentDir } from '@earendil-works/pi-coding-agent'
 import { readStringEnv } from './env.ts'
 import { type JsonObject, readStdin, writeStdout } from './io.ts'
 import {
@@ -26,7 +30,12 @@ const HARNESS_MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'tool'])
  * experiment config is reproducible from a bare `bun run eval`; PI_RLM=0
  * restores the pure-port arm (no extra extension, no repl/rlm in the allowlist). */
 const PI_RLM_EXTENSION_PATH = new URL('../node_modules/@hicaru/pi-rlm/src/index.ts', import.meta.url).pathname
-const PI_RLM_TOOL_NAMES = ['repl', 'rlm']
+/** Only `repl` is exposed. The top-level `rlm` tool runs a recursive child engine
+ * over the sandbox `context` (repo files) with no web tools — on a web task it
+ * searched an empty context and returned "no files", costing ~56s and ~$0.09 for
+ * nothing (smoke 2). The RLM surface that fits web evidence is repl + llm_query/
+ * rlm_query inside the sandbox. */
+const PI_RLM_TOOL_NAMES = ['repl']
 const SYSTEM_PROMPT =
   "You are an autonomous research agent. Answer the user's question using the available tools. " +
   'Ground factual claims in sources, include inline citations, and list sources at the end. Do not ask clarifying questions.'
@@ -34,6 +43,22 @@ const SYSTEM_PROMPT =
 if (import.meta.main) {
   const input = (await readStdin()) as AdapterInput
   writeStdout(await runAdapter(input))
+}
+
+/** pi-rlm persists cross-session SkillState to <agentDir>/rlm-skillstate.json and
+ * all trials share the agent dir, so earlier trials' notes contaminate later ones
+ * (observed: smoke 2 cited a note distilled in smoke 1). Give each adapter process
+ * a fresh agent dir seeded with the pinned rlm.json; SkillState starts empty and is
+ * discarded with the dir. */
+function isolateRlmAgentDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'pi-rlm-eval-'))
+  try {
+    copyFileSync(join(getAgentDir(), 'rlm.json'), join(dir, 'rlm.json'))
+  } catch {
+    // No rlm.json => package defaults; the dir still isolates the skill state.
+  }
+  process.env.PI_CODING_AGENT_DIR = dir
+  return dir
 }
 
 async function runAdapter(input: AdapterInput): Promise<object> {
@@ -48,6 +73,7 @@ async function runAdapter(input: AdapterInput): Promise<object> {
   const tools = rlmEnabled ? ['you-search', 'you-contents', ...PI_RLM_TOOL_NAMES] : ['you-search', 'you-contents']
   const prompt = input.task.prompts.join('\n\n')
   const { events, subscribe } = createTrajectoryCollector()
+  const isolatedAgentDir = rlmEnabled ? isolateRlmAgentDir() : undefined
 
   const { session } = await createPiSession({
     model,
@@ -115,6 +141,7 @@ async function runAdapter(input: AdapterInput): Promise<object> {
     }
   } finally {
     await disposePiSession(session)
+    if (isolatedAgentDir) rmSync(isolatedAgentDir, { recursive: true, force: true })
   }
 }
 
