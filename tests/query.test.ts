@@ -36,7 +36,6 @@ describe('ClickHouse query planning', () => {
       'tool-counts',
       'ungradable',
       'score-histogram',
-      'fanout',
     ])
   })
 })

@@ -15,26 +15,25 @@ metadata:
 Use `you-search` to discover web sources and `you-contents` to read specific URLs. Search finds candidate sources; reading extracts reliable evidence.
 
 Answer from your extraction results — each one is a sub-model's distilled read of the actual page, with its
-`Unresolved gaps` reporting what the page did NOT answer. Search results also carry a `sufficient` verdict and
-`targets` naming URLs worth a full read — advisory only: YOU decide whether to read them.
+`Unresolved gaps` reporting what the page did NOT answer.
 
 ## Search Pipeline
 
 ### Phase 1: Plan
 
 1. Restate the core question and identify the type of answer required (single value, list, comparison, ranking, explanation).
-2. Break the question into 3-4 research facets, and for each draft a 3-6 word keyword query (one facet per query — never paste the whole question).
-3. For each facet, list the value/source/date to find, plus domain/recency/locale filters only if they clearly help.
+2. Break the question into 3-5 research items, and for each draft a 3-6 word keyword query (one facet per query — never paste the whole question).
+3. For each item, list the value/source/date to find and the 3-6 word query for it, plus domain/recency/locale filters only if they clearly help.
 4. **Questions asking for a list or set: enumerate the candidate universe first.** Whenever the answer is "all the X that satisfy Y" — countries, companies, people, products, laws, events, model years, species, files, anything countable — list the full class of plausible candidates first, then verify each against the stated criteria. A checklist beats hoping search reveals the missing items.
-5. **Decompose through one call**: `you-search(query=<primary facet>, sub_queries=[<facet 2>, <facet 3>, <facet 4>], task=<the overall question>)`. Every facet is searched and distilled in that single call — do NOT issue parallel you-search calls yourself; one call per batch.
+5. Fire the queries for Phase 1's research items together in one parallel batch — the harness runs tool calls concurrently, so a batch costs one round of latency.
 
 ### Phase 2: Investigate
 
-1. **Read the sections**: results return as one distilled section per sub-query (in your input order), each with its facts, `sufficient` verdict, and `targets` naming URLs worth a full read.
-2. **Read only on targets**: call `you-contents(urls=[...])` (1-3 URLs) ONLY when a section's facts do not close its facet AND its `targets` name a URL worth reading. Snippet-derived facts are sufficient otherwise — do not read pages reflexively.
+1. **Search broadly**: `you-search` to find relevant pages. Results arrive distilled — each carries extracted facts and its unresolved gaps.
+2. **Read content**: Call `you-contents(urls=[url1,url2])` (1-3 URLs at a time) on the most promising URLs. Always read at least one page before answering.
 3. **If incomplete**: refine the query and search again. If the question names a source (e.g., "according to the CDC"), pin its domain inline: `you-search(query="... site:cdc.gov")`.
 4. **If still stuck**: do not reword the same query against the same source — change something structural: a different host class (government portal, data catalogue, the publisher's own site), the underlying dataset (CSV/PDF), or a different facet.
-5. If a document or file read comes back thin, search for the same data in an HTML source before concluding it is unavailable — publishers usually reprint report/dataset figures on regular pages.
+5. For a purely factual question with no named source, `knowledge: "core"` can return licensed factual answers alongside web results.
 
 ### Phase 3: Verify
 

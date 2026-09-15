@@ -315,6 +315,24 @@ reasoning. Notably latency fell (128s) and searches rose 66% — the root search
 Next: decomposition run isolating response_format (v8 harness, schema OFF, prose prompts) before any further
 design iteration; the v7-vs-v8 diff bundles too many variables to attribute without it.
 
+### Experiment series closed — 2026-09-15 (revert to the v5 config as the standing best)
+
+ClickHouse fan-out analysis (query preset `fanout`, commit 5893772) confirmed the adoption failure: 6/872
+completed root you-search calls carried `sub_queries` (5 of 50 tasks), 2.67 sub-queries per batch against a cap
+of 4, and only 1.83 facts per distilled section — the fan-out mechanism never engaged, and where it did, it
+returned thinner evidence than a single search. v6 (−0.066), v7 (−0.10), v8 (−0.54) versus v5 is a monotonic
+slide across three independent design iterations, each individually mechanism-verified: the pattern is a
+scaffold-model ceiling, not tuning noise. This harness's value is concentrated in one-shot distill sub-calls
+over inline text — the deeper the sub-model autonomy added (verdicts, gates, fan-out, tool loops), the worse
+the trial outcomes, consistent with pi's extension surface and the MCP tool contract being designed for
+strong cloud-inference roots rather than a local-weight model behind OpenRouter.
+
+**Standing config: RLM v5 (commit d5c1fcd: sub-model-verdict HTML retry gate, question-blind distillation,
+reasoningEffort minimal, chunk+map merge)** — the code is restored byte-identical to that state; the run
+records above remain as the experiment log. Best recorded sample: F1 0.8054, FC 0.64 (d5c1fcd); full 900-task
+baseline rows in the Results section stand. No further scaffold iterations are planned; future gains would
+require a stronger root model rather than deeper extension machinery.
+
 ### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)### 50-task sample re-run — 2026-09-14 (RLM v3: semantic dedup + retrieval-breadth skill)
 
 Same 50 tasks; changes since v2: Jaccard paraphrase dedup (>=0.8), zero-result passthrough

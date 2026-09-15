@@ -1,296 +1,394 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdir, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { Usage } from '@earendil-works/pi-ai'
 import {
-  buildDistillPrompt,
-  buildExplorePrompt,
+  agePath,
   buildQueryRepeatNote,
-  EXPLORE_JSON_SCHEMA,
-  EXTRACTION_JSON_SCHEMA,
+  chunkText,
+  DUMP_DIR_PREFIX,
+  DumpStore,
+  EXTRACTION_SYSTEM_PROMPT,
   FULL_PAGE_STEERING_NOTE,
   formatExtractionFallback,
   formatExtractionSuccess,
-  formatSearchSections,
   formatStructuredExtraction,
   isEmptySearchResult,
   isFullPageSearch,
+  narrowToGoal,
   normalizeQuery,
   parseExtractionContract,
   QueryDeduper,
   queriesSimilar,
   RLM_CONFIG,
-  runGrep,
-  sliceByLines,
-  validateExploreAction,
+  type RlmConfig,
+  runChunkedExtraction,
+  type SubCall,
+  scanInteractiveHtml,
+  shouldRetryWithHtml,
+  sweepStaleDumpDirs,
 } from '../src/rlm.ts'
 
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function fakeUsage(n: number): Usage {
+  return {
+    input: n,
+    output: n,
+    cacheRead: 0,
+    cacheWrite: 0,
+    totalTokens: n * 2,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: n / 1000 },
+  }
+}
+
+const testConfig: Pick<RlmConfig, 'chunkChars' | 'maxChunks'> = { chunkChars: 200, maxChunks: 3 }
+
 describe('RLM_CONFIG (fixed constants, no env knobs)', () => {
-  test('fixed constants: window boundary at ~2 chars/token web density + explore-loop caps', () => {
+  test('chunks fit muse 131k window at measured ~2 chars/token web density', () => {
     // Measured in the smoke: web content is ~2 chars/token (52k tokens ≈ 100k chars),
     // so 300k chars ≈ 150k tokens — over the 131,072 window. 200k chars ≈ 100k tokens.
     expect(RLM_CONFIG.chunkChars).toBe(200_000)
-    expect(RLM_CONFIG.maxGrepRounds).toBe(3)
-    expect(RLM_CONFIG.grepMaxMatches).toBe(50)
-    expect(RLM_CONFIG.grepFeedbackChars).toBe(4_000)
-    expect(RLM_CONFIG.maxSubQueries).toBe(4)
+    expect(RLM_CONFIG.maxChunks).toBe(8)
   })
 
-  test('extraction schema: strict JSON schema with required verdict + advisory targets', () => {
-    expect(EXTRACTION_JSON_SCHEMA.type).toBe('object')
-    expect(EXTRACTION_JSON_SCHEMA.additionalProperties).toBe(false)
-    const required = EXTRACTION_JSON_SCHEMA.required as readonly string[]
-    for (const key of ['facts', 'goal_status', 'unresolved_gaps', 'confidence', 'sufficient', 'targets']) {
-      expect(required).toContain(key)
-    }
-    const props = EXTRACTION_JSON_SCHEMA.properties as Record<string, { maxItems?: number } | undefined>
-    expect(props.facts?.maxItems).toBe(10)
-    expect(props.targets?.maxItems).toBe(3)
+  test('sub-call output is capped (latency: sub-calls are output-bound, ~230 tok/s)', () => {
+    // 1,800: headroom above the 10-fact cap — smoke 2 showed 1,500 truncated
+    // 18% of contracts mid-JSON (dense fact lists with URLs at ~2 chars/token).
+    expect(RLM_CONFIG.maxOutputTokens).toBe(1_800)
+    // The prompt bounds the array so the cap truncates rarely, and carries the
+    // same instruction so the model stops before the cap.
+    expect(EXTRACTION_SYSTEM_PROMPT).toMatch(/at most 10 facts/i)
+    expect(EXTRACTION_SYSTEM_PROMPT).toMatch(/no preamble|no introduction/i)
   })
 })
 
-describe('parseExtractionContract (thin trust-boundary validator over schema output)', () => {
-  const valid = {
+describe('chunkText', () => {
+  test('returns a single chunk when text fits', () => {
+    expect(chunkText('hello', 100)).toEqual(['hello'])
+    expect(chunkText('x'.repeat(100), 100)).toEqual(['x'.repeat(100)])
+  })
+
+  test('splits oversized text into chunks no larger than chunkChars, preferring newline boundaries', () => {
+    const line = 'a'.repeat(90)
+    const text = Array.from({ length: 10 }, () => line).join('\n') // ~909 chars
+    const chunks = chunkText(text, 200)
+    expect(chunks.length).toBeGreaterThan(3)
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(200)
+      expect(chunk.length).toBeGreaterThan(0)
+    }
+    // Newline preference: every chunk except the last ends at a line boundary.
+    for (const chunk of chunks.slice(0, -1)) expect(chunk.endsWith('\n')).toBe(true)
+    // Lossless: concatenation reproduces the input.
+    expect(chunks.join('')).toBe(text)
+  })
+
+  test('hard-splits when there is no newline within the window', () => {
+    const text = 'b'.repeat(500)
+    const chunks = chunkText(text, 200)
+    expect(chunks).toEqual(['b'.repeat(200), 'b'.repeat(200), 'b'.repeat(100)])
+  })
+})
+
+describe('runChunkedExtraction', () => {
+  test('single chunk: one sub-call, no merge pass', async () => {
+    const calls: string[] = []
+    const call: SubCall = async (_system, user) => {
+      calls.push(user)
+      return { text: 'EXTRACTED', usage: fakeUsage(10) }
+    }
+    const outcome = await runChunkedExtraction(call, 'small doc', 'find the thing', testConfig)
+    expect(outcome.text).toBe('EXTRACTED')
+    expect(outcome.chunks).toBe(1)
+    expect(outcome.truncatedToChunks).toBe(false)
+    expect(calls.length).toBe(1)
+    expect(calls[0]).toContain('find the thing')
+    expect(calls[0]).toContain('small doc')
+    expect(calls[0]).not.toContain('chunk 1 of')
+    expect(outcome.usage.input).toBe(10)
+  })
+
+  test('multi chunk: one sub-call per chunk plus one merge pass, usage summed', async () => {
+    const prompts: string[] = []
+    const call: SubCall = async (_system, user) => {
+      prompts.push(user)
+      return { text: `part${prompts.length}`, usage: fakeUsage(10) }
+    }
+    const raw = 'x'.repeat(450) // 3 chunks at 200 chars
+    const outcome = await runChunkedExtraction(call, raw, 'goal', testConfig)
+    expect(outcome.chunks).toBe(3)
+    expect(prompts.length).toBe(4) // 3 map + 1 merge
+    expect(prompts[0]).toContain('chunk 1 of 3')
+    expect(prompts[2]).toContain('chunk 3 of 3')
+    // Merge prompt carries the per-chunk extractions and demands the same
+    // JSON contract so chunked-mode output stays parseable (14/15 -> 15/15).
+    expect(prompts[3]).toContain('part1')
+    expect(prompts[3]).toContain('part3')
+    expect(prompts[3]).toContain('"facts"')
+    expect(prompts[3]).toContain('deduplicated')
+    expect(outcome.text).toBe('part4')
+    expect(outcome.usage.input).toBe(40)
+    expect(outcome.usage.cost.total).toBeCloseTo(0.04)
+  })
+
+  test('input beyond maxChunks * chunkChars is truncated before extraction', async () => {
+    let sawLength = 0
+    const call: SubCall = async (_system, user) => {
+      sawLength = Math.max(sawLength, user.length)
+      return { text: 'E', usage: undefined }
+    }
+    const raw = 'y'.repeat(10_000) // max input = 3 * 200 = 600
+    const outcome = await runChunkedExtraction(call, raw, 'goal', testConfig)
+    expect(outcome.truncatedToChunks).toBe(true)
+    expect(outcome.chunks).toBe(3)
+    expect(sawLength).toBeLessThan(1000) // prompts wrap at most 600 chars of document
+    expect(outcome.usage.input).toBe(0) // missing usage contributes zero
+  })
+
+  test('chunks extract concurrently (map is parallel; merge waits for all)', async () => {
+    let active = 0
+    let maxActive = 0
+    const order: number[] = []
+    const call: SubCall = async (_system, user) => {
+      active += 1
+      maxActive = Math.max(maxActive, active)
+      // Stagger completion so a sequential loop would finish in order while
+      // a parallel one overlaps.
+      if (user.includes('Merge them')) {
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        active -= 1
+        return { text: 'MERGED', usage: fakeUsage(10) }
+      }
+      const n = Number(user.match(/chunk (\d+)/)?.[1] ?? 0)
+      await new Promise((resolve) => setTimeout(resolve, 30 - n * 5))
+      active -= 1
+      order.push(n)
+      return { text: `part${n}`, usage: fakeUsage(10) }
+    }
+    const raw = 'x'.repeat(450) // 3 chunks
+    const outcome = await runChunkedExtraction(call, raw, 'goal', testConfig)
+    expect(maxActive).toBeGreaterThan(1) // actually overlapped
+    expect(outcome.chunks).toBe(3)
+    expect(outcome.text).toBe('MERGED') // merge still runs after all chunks
+    // Order-independent: all chunks fed the merge regardless of finish order.
+    expect([...order].sort().join()).toBe('1,2,3')
+    expect(outcome.usage.input).toBe(40)
+  })
+
+  test('a failing sub-call rejects (caller falls back to raw text)', async () => {
+    const call: SubCall = async () => {
+      throw new Error('provider 500')
+    }
+    await expect(runChunkedExtraction(call, 'doc', 'goal', testConfig)).rejects.toThrow('provider 500')
+  })
+})
+
+describe('DumpStore', () => {
+  test('write records size and path; cleanup removes the dir', async () => {
+    const store = new DumpStore()
+    const { path, bytes } = await store.write('you-contents', 'x'.repeat(26))
+    expect(bytes).toBe(26)
+    expect(store.rootPath).toBeTruthy()
+    expect(path.startsWith(store.rootPath as string)).toBe(true)
+    expect(await pathExists(path)).toBe(true)
+    await store.cleanup()
+    expect(await pathExists(path)).toBe(false)
+  })
+
+  test('cleanup with nothing written is a no-op', async () => {
+    const fresh = new DumpStore()
+    await fresh.cleanup() // no dir created, nothing to delete
+    expect(fresh.rootPath).toBeUndefined()
+  })
+})
+
+describe('sweepStaleDumpDirs', () => {
+  const staleName = `you-dumps-0-rlmtest-stale-${process.pid}`
+  const freshName = `you-dumps-0-rlmtest-fresh-${process.pid}`
+  const ownName = `${DUMP_DIR_PREFIX}rlmtest-own`
+  const stalePath = join(tmpdir(), staleName)
+  const freshPath = join(tmpdir(), freshName)
+  const ownPath = join(tmpdir(), ownName)
+
+  test("removes aged dirs from dead pids; keeps fresh dirs and this process's dirs", async () => {
+    await mkdir(stalePath, { recursive: true })
+    await writeFile(join(stalePath, '001-you-search.md'), 'residue')
+    await mkdir(freshPath, { recursive: true })
+    await mkdir(ownPath, { recursive: true })
+    try {
+      // Age only the stale dir beyond the 24h threshold.
+      await agePath(stalePath, 25 * 60 * 60 * 1000)
+      await sweepStaleDumpDirs()
+      expect(await pathExists(stalePath)).toBe(false)
+      expect(await pathExists(freshPath)).toBe(true)
+      expect(await pathExists(ownPath)).toBe(true)
+    } finally {
+      await rm(stalePath, { recursive: true, force: true })
+      await rm(freshPath, { recursive: true, force: true })
+      await rm(ownPath, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('formatExtractionSuccess reads ledger (retry observability)', () => {
+  test('renders per-read ledger when a retry happened', () => {
+    const reads = [
+      { format: 'markdown' as const, facts: 0, won: false },
+      { format: 'html' as const, facts: 6, won: true },
+    ]
+    const text = formatExtractionSuccess(60_000, 1, 'facts here', false, reads)
+    expect(text).toContain('markdown: 0 facts')
+    expect(text).toContain('html: 6 facts (won)')
+    expect(text).toContain('2 reads')
+  })
+
+  test('single read renders the plain header (no reads ledger)', () => {
+    const text = formatExtractionSuccess(42_000, 1, 'the facts', false)
+    expect(text).toContain('42000 chars')
+    expect(text).not.toContain('markdown:')
+  })
+})
+
+describe('result text formats (model-facing contract)', () => {
+  test('extraction success: names chunk count and density; dump path is internal-only', () => {
+    const text = formatExtractionSuccess(42_000, 1, 'the facts', false)
+    // Dump paths must never reach the root model: no read/grep tools exist, and
+    // the sampled trials showed paths leaking into final answers as citations.
+    expect(text).not.toContain('/tmp/dumps')
+    expect(text).not.toContain('.md')
+    expect(text).toContain('42000 chars')
+    expect(text.endsWith('the facts')).toBe(true)
+    // Oversize-truncated inputs must not pass silently.
+    const flagged = formatExtractionSuccess(3_000_000, 8, 'partial', true)
+    expect(flagged).toContain('partially extracted')
+  })
+
+  test('extraction fallback: leads with the failure note, then raw text; dump path internal-only', () => {
+    const text = formatExtractionFallback(50_000, 'provider 500', 'RAWBODY')
+    expect(text.indexOf('provider 500')).toBeLessThan(text.indexOf('RAWBODY'))
+    expect(text).toContain('50000 chars')
+    expect(text).not.toContain('/tmp/d.md')
+    expect(text).not.toContain('grep-dump')
+    expect(text.endsWith('RAWBODY')).toBe(true)
+  })
+})
+
+describe('narrowToGoal (hybrid grep: scaffold narrows, one sub-call extracts)', () => {
+  const region = (pad: number, phrase: string) => `${'x'.repeat(pad)}${phrase}${'y'.repeat(pad)}`
+
+  test('returns goal-matching regions within budget, dropping unmatched filler', () => {
+    const text = `${region(20_000, 'the card was released in 2009')}${region(20_000, 'totally unrelated filler')}${region(20_000, 'printed at uncommon rarity')}`
+    const goal = 'When was the card released and what rarity did it have?'
+    const narrowed = narrowToGoal(text, goal, 50_000)
+    expect(narrowed).toBeDefined()
+    expect(narrowed?.text).toContain('released in 2009')
+    expect(narrowed?.text).toContain('uncommon rarity')
+    expect(narrowed?.text).not.toContain('totally unrelated filler')
+    expect((narrowed?.text ?? '').length).toBeLessThanOrEqual(50_000)
+    expect(narrowed?.matchedRegions).toBe(2)
+  })
+
+  test('merges nearby matches into one region and marks cuts between disjoint regions', () => {
+    const text = `${region(500, 'released 2009')}${region(300, 'uncommon rarity')}${region(20_000, 'released 2015')}`
+    const goal = 'card release years and rarities'
+    const narrowed = narrowToGoal(text, goal, 50_000)
+    // First two matches are within one window: no cut between them — both
+    // appear before the first region separator.
+    expect(narrowed?.text).toContain('released 2009')
+    expect(narrowed?.text).toContain('uncommon rarity')
+    const mergedText = narrowed?.text ?? ''
+    expect(mergedText.indexOf('released 2009')).toBeLessThan(mergedText.indexOf('[…]'))
+    expect(mergedText.indexOf('uncommon rarity')).toBeLessThan(mergedText.indexOf('[…]'))
+    expect(narrowed?.matchedRegions).toBe(2)
+  })
+
+  test('no term matches → undefined (caller falls back to chunk+map)', () => {
+    expect(narrowToGoal('plain text about weather', 'quantum chromodynamics loop', 10_000)).toBeUndefined()
+  })
+
+  test('goal with no usable terms → undefined', () => {
+    expect(narrowToGoal('some text', 'a an the of and', 10_000)).toBeUndefined()
+  })
+
+  test('budget cap: many matches truncate to the earliest regions, still under budget', () => {
+    const text = Array.from({ length: 40 }, (_, i) => `${region(1_000, `artifact ${i}`)}`).join('')
+    const narrowed = narrowToGoal(text, 'artifact inventory', 20_000)
+    expect(narrowed?.text.length).toBeLessThanOrEqual(20_000)
+    expect(narrowed?.text).toContain('artifact 0')
+  })
+})
+
+describe('extraction contract (structured sub-call output)', () => {
+  const contract = JSON.stringify({
     facts: ['Fact one.', 'Fact two.'],
     goal_status: 'partially_satisfied',
     unresolved_gaps: ['exact year'],
     confidence: 0.6,
-    sufficient: false,
-    targets: [{ url: 'https://x.gov/report', extract: 'Find the 2019 table.' }],
-  }
+  })
 
-  test('accepts a schema-conformant contract, including advisory verdict fields', () => {
-    const parsed = parseExtractionContract(valid)
+  test('accepts a bare JSON contract', () => {
+    const parsed = parseExtractionContract(contract)
     expect(parsed.ok).toBe(true)
     if (parsed.ok) {
       expect(parsed.contract.facts).toEqual(['Fact one.', 'Fact two.'])
       expect(parsed.contract.goal_status).toBe('partially_satisfied')
       expect(parsed.contract.confidence).toBe(0.6)
-      expect(parsed.contract.sufficient).toBe(false)
-      expect(parsed.contract.targets?.[0]?.url).toBe('https://x.gov/report')
-      expect(parsed.contract.targets?.[0]?.extract).toBe('Find the 2019 table.')
     }
   })
 
-  test('accepts an empty-targets satisfied verdict and optional suggestion', () => {
-    const parsed = parseExtractionContract({
-      facts: ['Fact one.'],
-      goal_status: 'satisfied',
-      unresolved_gaps: [],
-      confidence: 0.9,
-      sufficient: true,
-      targets: [],
-      suggestion: 'The full table exists in the linked PDF.',
-    })
-    expect(parsed.ok).toBe(true)
-    if (parsed.ok) {
-      expect(parsed.contract.sufficient).toBe(true)
-      expect(parsed.contract.targets).toEqual([])
-      expect(parsed.contract.suggestion).toBe('The full table exists in the linked PDF.')
-    }
+  test('accepts fenced and prose-wrapped JSON (model tics)', () => {
+    const fenced = '```json\n' + contract + '\n```'
+    expect(parseExtractionContract(fenced).ok).toBe(true)
+    const wrapped = `Here is the extraction:\n${contract}\nDone.`
+    expect(parseExtractionContract(wrapped).ok).toBe(true)
   })
 
-  test('empty facts valid only with goal_status not_found', () => {
-    const notFound = {
+  test('empty facts is valid only with goal_status not_found', () => {
+    const notFound = JSON.stringify({
       facts: [],
       goal_status: 'not_found',
-      unresolved_gaps: ['x'],
-      confidence: 0.5,
-      sufficient: true,
-      targets: [],
-    }
+      unresolved_gaps: ['nothing here'],
+      confidence: 0.9,
+    })
     expect(parseExtractionContract(notFound).ok).toBe(true)
-    expect(parseExtractionContract({ ...notFound, goal_status: 'satisfied', facts: [] }).ok).toBe(false)
+    const emptySatisfied = JSON.stringify({ facts: [], goal_status: 'satisfied', unresolved_gaps: [], confidence: 0.9 })
+    expect(parseExtractionContract(emptySatisfied).ok).toBe(false)
   })
 
-  test('rejects malformed verdicts and targets at the trust boundary', () => {
-    const base = {
-      facts: ['f'],
-      goal_status: 'satisfied',
-      unresolved_gaps: [],
-      confidence: 0.5,
-      sufficient: true,
-      targets: [],
+  test('salvages a truncated contract: recovers complete facts, marks partial', () => {
+    // Output-cap truncation cut the JSON after three complete facts.
+    const truncated = '{"facts": ["Fact one about the 2019 report.", "Fact two with URL https://x.gov/a", "Fact th'
+    const parsed = parseExtractionContract(truncated)
+    expect(parsed.ok).toBe(true)
+    if (parsed.ok) {
+      expect(parsed.contract.facts).toEqual(['Fact one about the 2019 report.', 'Fact two with URL https://x.gov/a'])
+      expect(parsed.contract.goal_status).toBe('partially_satisfied')
+      expect(parsed.contract.confidence).toBeLessThan(1)
     }
-    const t = (url: string) => ({ url, extract: 'look' })
-    expect(parseExtractionContract('not an object').ok).toBe(false)
-    expect(parseExtractionContract({ ...base, goal_status: 'done' }).ok).toBe(false)
-    expect(parseExtractionContract({ ...base, confidence: 3 }).ok).toBe(false)
-    expect(parseExtractionContract({ ...base, sufficient: 'false' }).ok).toBe(false)
-    expect(parseExtractionContract({ ...base, sufficient: false, targets: [t('a'), t('b'), t('c'), t('d')] }).ok).toBe(
+  })
+
+  test('truncation before any complete fact falls back to prose (ok:false)', () => {
+    expect(parseExtractionContract('{"facts": ["cut mid str').ok).toBe(false)
+  })
+
+  test('rejects invalid goal_status, bad confidence, and non-object output', () => {
+    expect(parseExtractionContract(JSON.stringify({ facts: ['f'], goal_status: 'done', confidence: 0.5 })).ok).toBe(
       false,
     )
-    expect(parseExtractionContract({ ...base, sufficient: false, targets: [{ extract: 'no url' }] }).ok).toBe(false)
-    expect(parseExtractionContract({ ...base, facts: [42] }).ok).toBe(false)
-  })
-})
-
-describe('validateExploreAction (oversized-doc loop dispatch, schema-enforced)', () => {
-  test('accepts grep and distill actions', () => {
-    const grep = validateExploreAction({ action: 'grep', pattern: 'suppression units' })
-    expect(grep.ok).toBe(true)
-    if (grep.ok && grep.action.kind === 'grep') expect(grep.action.pattern).toBe('suppression units')
-    const distill = validateExploreAction({ action: 'distill', regions: [{ start_line: 10, end_line: 40 }] })
-    expect(distill.ok).toBe(true)
-    if (distill.ok && distill.action.kind === 'distill') {
-      expect(distill.action.regions).toEqual([{ start_line: 10, end_line: 40 }])
-    }
-  })
-
-  test('rejects unknown actions, malformed patterns, and out-of-range regions', () => {
-    expect(validateExploreAction({ action: 'explode' }).ok).toBe(false)
-    expect(validateExploreAction({ action: 'grep', pattern: '' }).ok).toBe(false)
-    expect(validateExploreAction({ action: 'grep' }).ok).toBe(false)
-    expect(validateExploreAction({ action: 'distill', regions: [] }).ok).toBe(false)
-    expect(validateExploreAction({ action: 'distill', regions: [{ start_line: 40, end_line: 10 }] }).ok).toBe(false)
-    expect(validateExploreAction({ action: 'distill', regions: [{ start_line: 0, end_line: 5 }] }).ok).toBe(false)
-    expect(
-      validateExploreAction({
-        action: 'distill',
-        regions: [
-          { start_line: 1, end_line: 5 },
-          { start_line: 2, end_line: 6 },
-          { start_line: 3, end_line: 7 },
-          { start_line: 4, end_line: 8 },
-        ],
-      }).ok,
-    ).toBe(false)
-    expect(validateExploreAction('junk').ok).toBe(false)
-  })
-
-  test('docLines bound: regions beyond the document reject', () => {
-    expect(validateExploreAction({ action: 'distill', regions: [{ start_line: 1, end_line: 50 }] }, 40).ok).toBe(false)
-    expect(validateExploreAction({ action: 'distill', regions: [{ start_line: 1, end_line: 40 }] }, 40).ok).toBe(true)
-  })
-
-  test('explore schema mirrors the validator: enum action, required pattern/regions', () => {
-    expect(EXPLORE_JSON_SCHEMA.properties?.action).toMatchObject({ enum: ['grep', 'distill'] })
-  })
-})
-
-describe('distill prompts (one user message, no system role, schema carries the shape)', () => {
-  const TASK = 'Which fires involved more than 1000 suppression units after 2010?'
-
-  test('search distill: self-contained message with instructions, untrusted-data warning, task, query, results', () => {
-    const prompt = buildDistillPrompt({ task: TASK, query: 'san francisco fire database', doc: 'RESULT BODY LINE' })
-    expect(prompt).toContain('untrusted')
-    expect(prompt).toContain(TASK)
-    expect(prompt).toContain('san francisco fire database')
-    expect(prompt).toContain('RESULT BODY LINE')
-  })
-
-  test('search distill: truncates the overall task to 500 chars', () => {
-    const prompt = buildDistillPrompt({ task: 'w'.repeat(700), query: 'q', doc: 'r' })
-    expect(prompt).toContain('w'.repeat(500))
-    expect(prompt).not.toContain('w'.repeat(501))
-  })
-
-  test('explore prompt: doc metadata only (never the oversized doc) plus round feedback', () => {
-    const prompt = buildExplorePrompt({
-      task: TASK,
-      guidance: 'find the post-2010 table',
-      round: 2,
-      docChars: 915_2741,
-      docLines: 120_000,
-      feedback: 'line 40213: suppression units 2011 table',
-    })
-    expect(prompt).toContain('120000')
-    expect(prompt).toContain('40213')
-    expect(prompt).toContain('find the post-2010 table')
-    // The oversized document itself must never ride in the explore prompt.
-    expect(prompt.length).toBeLessThan(6_000)
-  })
-})
-
-describe('sliceByLines (region assembly for the final distill after explore)', () => {
-  const doc = Array.from({ length: 100 }, (_, i) => `line ${i + 1}: ${'x'.repeat(20)}`).join('\n')
-
-  test('extracts 1-based inclusive line regions with cut markers between disjoint regions', () => {
-    const text = sliceByLines(
-      doc,
-      [
-        { start_line: 2, end_line: 3 },
-        { start_line: 50, end_line: 50 },
-      ],
-      200_000,
+    expect(parseExtractionContract(JSON.stringify({ facts: ['f'], goal_status: 'satisfied', confidence: 3 })).ok).toBe(
+      false,
     )
-    expect(text).toContain('line 2:')
-    expect(text).toContain('line 3:')
-    expect(text).toContain('line 50:')
-    expect(text).not.toContain('line 4:')
-    expect(text).not.toContain('line 49:')
-    expect(text).toContain('[…]')
-  })
-
-  test('budget cap: stops adding regions once the budget is spent; first region always included', () => {
-    const big = Array.from({ length: 100 }, (_, i) => `line ${i + 1}: ${'y'.repeat(200)}`).join('\n')
-    const text = sliceByLines(
-      big,
-      [
-        { start_line: 1, end_line: 20 },
-        { start_line: 50, end_line: 60 },
-      ],
-      5_000,
-    )
-    expect(text.length).toBeLessThanOrEqual(5_500) // first region + marker slack
-    expect(text).toContain('line 1:')
-    expect(text).not.toContain('line 51:') // second region dropped over budget
-  })
-})
-
-describe('runGrep (Bun Shell grep over the in-memory document)', () => {
-  test('returns numbered matches, capped; literal pattern is injection-safe', async () => {
-    const doc = Array.from({ length: 120 }, (_, i) => (i % 10 === 0 ? `needle ${i}` : `filler line ${i}`)).join('\n')
-    const out = await runGrep(doc, 'needle', 5)
-    expect(out).toContain('1:needle 0')
-    expect(out.split('\n').filter((l) => l.includes('needle')).length).toBe(5)
-    const none = await runGrep(doc, 'zzz-not-there', 5)
-    expect(none).toBe('')
-  })
-})
-
-describe('formatSearchSections (un-merged per-sub-query render)', () => {
-  test('one section per sub-query in input order, contract or prose', () => {
-    const text = formatSearchSections([
-      {
-        query: 'q one',
-        contract: {
-          facts: ['Fact A.'],
-          goal_status: 'satisfied',
-          unresolved_gaps: [],
-          confidence: 0.9,
-          sufficient: true,
-          targets: [],
-        },
-      },
-      { query: 'q two', raw: 'RAW FALLBACK BODY' },
-    ])
-    expect(text).toContain('## "q one"')
-    expect(text).toContain('- Fact A.')
-    expect(text).toContain('## "q two"')
-    expect(text).toContain('RAW FALLBACK BODY')
-    expect(text.indexOf('q one')).toBeLessThan(text.indexOf('q two'))
-  })
-
-  test('zero-result sections pass the server guidance through verbatim', () => {
-    const text = formatSearchSections([{ query: 'q', raw: 'No results found. Try broader terms.' }])
-    expect(text).toContain('No results found. Try broader terms.')
-  })
-})
-
-describe('result text formats (model-facing contract)', () => {
-  test('extraction success: names call count and density; internals stay out of root text', () => {
-    const text = formatExtractionSuccess(42_000, 1, 'the facts', false)
-    expect(text).not.toContain('/tmp/dumps')
-    expect(text).not.toContain('.md')
-    expect(text).toContain('42000 chars')
-    expect(text.endsWith('the facts')).toBe(true)
-    const flagged = formatExtractionSuccess(3_000_000, 1, 'partial', true)
-    expect(flagged).toContain('partially extracted')
-  })
-
-  test('extraction fallback: leads with the failure note, then raw text', () => {
-    const text = formatExtractionFallback(50_000, 'no JSON contract', 'RAWBODY')
-    expect(text.indexOf('no JSON contract')).toBeLessThan(text.indexOf('RAWBODY'))
-    expect(text).toContain('50000 chars')
-    expect(text.endsWith('RAWBODY')).toBe(true)
+    expect(parseExtractionContract('no json here at all').ok).toBe(false)
+    expect(parseExtractionContract('["just", "an array"]').ok).toBe(false)
   })
 })
 
@@ -309,25 +407,31 @@ describe('formatStructuredExtraction (root-facing contract render)', () => {
     expect(text).toContain('- Fact one.')
     expect(text).toContain('- Fact two.')
     expect(text).toContain('exact year')
+    expect(text).toContain('refining a query toward a gap')
+    // Gap notes carry the contents escalation: highlights often lack the data.
     expect(text).toContain('you-contents')
   })
 
-  test('omits the gap note when there are no gaps; not_found renders explicitly', () => {
-    const clean = formatStructuredExtraction({ ...c, unresolved_gaps: [] })
-    expect(clean).toContain('- Fact one.')
-    expect(clean).not.toContain('refine')
-    const notFound = formatStructuredExtraction({
+  test('omits the gap note when there are no gaps', () => {
+    const text = formatStructuredExtraction({ ...c, unresolved_gaps: [] })
+    expect(text).toContain('- Fact one.')
+    expect(text).not.toContain('refine')
+  })
+
+  test('not_found renders explicitly', () => {
+    const text = formatStructuredExtraction({
       facts: [],
       goal_status: 'not_found',
       unresolved_gaps: ['nothing'],
       confidence: 0.9,
     })
-    expect(notFound).toContain('not_found')
-    expect(notFound).toContain('No facts')
+    expect(text).toContain('not_found')
+    expect(text).toContain('No facts')
+    expect(text).toContain('nothing')
   })
 })
 
-describe('visited_queries dedup (query-thrashing intercept, kept from v3/v7 data)', () => {
+describe('visited_queries dedup (query-thrashing intercept)', () => {
   test('normalizes case and whitespace', () => {
     expect(normalizeQuery('  Top Story   on Hacker News ')).toBe('top story on hacker news')
   })
@@ -344,6 +448,7 @@ describe('visited_queries dedup (query-thrashing intercept, kept from v3/v7 data
     const deduper = new QueryDeduper()
     expect(deduper.check('').duplicate).toBe(false)
     expect(deduper.check('   ').duplicate).toBe(false)
+    // ...and are not recorded as seen.
     expect(deduper.check('').duplicate).toBe(false)
   })
 
@@ -354,23 +459,6 @@ describe('visited_queries dedup (query-thrashing intercept, kept from v3/v7 data
     expect(note).toContain('final answer')
     expect(note.toLowerCase()).not.toContain('not supported')
   })
-
-  test('semantic near-duplicates block even when wording differs', () => {
-    expect(
-      queriesSimilar(
-        'ourworldindata.org age-standardized death rate pancreatic cancer',
-        'ourworldindata.org "age-standardized death rate" pancreatic cancer 2014',
-      ),
-    ).toBe(true)
-    expect(queriesSimilar('alpha beta gamma', 'alpha beta delta')).toBe(false)
-    const deduper = new QueryDeduper()
-    const first = deduper.check('ourworldindata.org "age-standardized death rate" pancreatic cancer 2014')
-    expect(first.duplicate).toBe(false)
-    const paraphrase = deduper.check('ourworldindata.org age-standardized death rate pancreatic cancer')
-    expect(paraphrase.duplicate).toBe(true)
-    const different = deduper.check('site:catalogue.data.gov.bc.ca ICBC vehicle population municipality')
-    expect(different.duplicate).toBe(false)
-  })
 })
 
 describe('zero-result passthrough (server guidance must reach the root)', () => {
@@ -379,6 +467,66 @@ describe('zero-result passthrough (server guidance must reach the root)', () => 
     expect(isEmptySearchResult({ results: {} })).toBe(true)
     expect(isEmptySearchResult(undefined)).toBe(true)
     expect(isEmptySearchResult({ results: { web: [{ url: 'https://x' }], news: [], knowledge: [] } })).toBe(false)
+  })
+})
+
+describe('semantic query dedup (paraphrase thrash)', () => {
+  test('near-identical paraphrases block even when wording differs', () => {
+    // Direct threshold check: 5/6 shared tokens = 0.83 Jaccard.
+    expect(
+      queriesSimilar(
+        'ourworldindata.org age-standardized death rate pancreatic cancer',
+        'ourworldindata.org "age-standardized death rate" pancreatic cancer 2014',
+      ),
+    ).toBe(true)
+    expect(queriesSimilar('alpha beta gamma', 'alpha beta delta')).toBe(false) // 3/5 < 0.8
+    const deduper = new QueryDeduper()
+    const first = deduper.check('ourworldindata.org "age-standardized death rate" pancreatic cancer 2014')
+    expect(first.duplicate).toBe(false)
+    const paraphrase = deduper.check('ourworldindata.org age-standardized death rate pancreatic cancer')
+    expect(paraphrase.duplicate).toBe(true)
+    // A genuinely different facet passes.
+    const different = deduper.check('site:catalogue.data.gov.bc.ca ICBC vehicle population municipality')
+    expect(different.duplicate).toBe(false)
+  })
+
+  test('short queries only match on high overlap; small facets stay distinct', () => {
+    const deduper = new QueryDeduper()
+    expect(deduper.check('Surrey ICBC passenger vehicles').duplicate).toBe(false)
+    // 3/4 tokens shared but only 4 tokens total — below the distinct-facet bar? No:
+    // 3/4 overlap is high; a different municipality is a different facet though.
+    const different = deduper.check('Langley ICBC passenger vehicles')
+    expect(different.duplicate).toBe(false)
+  })
+})
+
+describe('conditional HTML retry (thin contents extractions on interactive pages)', () => {
+  test('scan reduces html to bare body structure: head gone, attributes stripped, JSON islands kept', async () => {
+    const html = `<html><head><title>t</title><style>body{color:red}</style>
+<script>var analytics = 1;</script>
+<script type="application/json" id="data">{"rows": [[2019, 4.8], [2020, 5.1]]}</script></head>
+<body><nav class="menu" id="nav">Menu</nav>
+<table class="tbl" data-id="7"><tr><td class="x">2020</td><td>5.1</td></tr></table>
+<a href="/report">Full report</a><footer>Copyright</footer></body></html>`
+    const out = await scanInteractiveHtml(html)
+    // Head (title/style/analytics script) is gone; JSON data island survives.
+    expect(out).not.toContain('<style>')
+    expect(out).not.toContain('analytics')
+    expect(out).toContain('{"rows": [[2019, 4.8], [2020, 5.1]]}')
+    // Attributes stripped (except href), bare structure remains.
+    expect(out).not.toContain('class=')
+    expect(out).toContain('href="/report"')
+    expect(out).toContain('2020')
+    expect(out).toContain('Full report')
+    expect(out.length).toBeLessThan(html.length)
+  })
+
+  test('retry gate is the sub-model verdict only: not_found or zero facts, any page', () => {
+    expect(shouldRetryWithHtml('not_found', 0)).toBe(true)
+    expect(shouldRetryWithHtml('partially_satisfied', 0)).toBe(true) // empty facts
+    expect(shouldRetryWithHtml('partially_satisfied', 5)).toBe(false) // has facts
+    expect(shouldRetryWithHtml('satisfied', 3)).toBe(false)
+    expect(shouldRetryWithHtml(undefined, 0)).toBe(true) // prose fallback counts as thin
   })
 })
 

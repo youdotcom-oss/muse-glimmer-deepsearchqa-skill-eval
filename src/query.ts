@@ -9,7 +9,6 @@ export const QUERY_PRESETS = [
   'tool-counts',
   'ungradable',
   'score-histogram',
-  'fanout',
 ] as const
 
 export type QueryPreset = (typeof QUERY_PRESETS)[number]
@@ -155,58 +154,6 @@ SELECT
 FROM ${tables.graded}
 GROUP BY score_bucket
 ORDER BY score_bucket ASC
-FORMAT PrettyCompact`.trim()
-    case 'fanout':
-      // Root you-search call behavior: did the root use the fan-out signature,
-      // and what did the extension distill per call? Pairs started events
-      // (input.sub_queries) with completed events (details.rlm) by toolCallId.
-      return `
-WITH trajectory AS (
-  SELECT
-    JSONExtractString(json, 'taskId') AS task_id,
-    JSONExtractInt(json, 'trialIndex') AS trial_index,
-    JSONExtractFloat(json, 'score') AS score,
-    event
-  FROM ${tables.graded}
-  ARRAY JOIN JSONExtractArrayRaw(json, 'trial', 'trajectory') AS event
-  WHERE JSONExtractString(event, 'type') = 'tool_call'
-), started AS (
-  SELECT
-    task_id,
-    trial_index,
-    score,
-    JSONExtractString(event, 'metadata', 'toolCallId') AS call_id,
-    length(JSONExtractArrayRaw(JSONExtractRaw(event, 'input', 'sub_queries'))) AS sub_query_count
-  FROM trajectory
-  WHERE JSONExtractString(event, 'status') = 'started'
-    AND JSONExtractString(event, 'name') = 'you-search'
-), finished AS (
-  SELECT
-    task_id,
-    trial_index,
-    score,
-    JSONExtractString(event, 'metadata', 'toolCallId') AS call_id,
-    if(
-      length(JSONExtractArrayRaw(JSONExtractRaw(event, 'output', 'details', 'rlm', 'subQueries'))) > 0,
-      arraySum(x -> JSONExtractFloat(x, 'facts'), JSONExtractArrayRaw(JSONExtractRaw(event, 'output', 'details', 'rlm', 'subQueries')))
-        / length(JSONExtractArrayRaw(JSONExtractRaw(event, 'output', 'details', 'rlm', 'subQueries'))),
-      0
-    ) AS sq_avg_facts
-  FROM trajectory
-  WHERE JSONExtractString(event, 'status') = 'completed'
-    AND JSONExtractString(event, 'name') = 'you-search'
-)
-SELECT
-  count() AS completed_searches,
-  countIf(s.sub_query_count > 0) AS calls_with_sub_queries,
-  countIf(s.sub_query_count > 1) AS real_fanout_calls,
-  uniqExact(if(s.sub_query_count > 0, s.task_id, NULL)) AS tasks_ever_fanning,
-  round(avgIf(f.score, s.sub_query_count > 0), 4) AS avg_score_when_fanning,
-  round(avgIf(s.sub_query_count, s.sub_query_count > 1), 2) AS avg_sub_queries_per_fanout,
-  round(avgIf(f.sq_avg_facts, s.sub_query_count > 1), 2) AS avg_facts_per_section
-FROM started AS s
-INNER JOIN finished AS f
-  ON s.task_id = f.task_id AND s.trial_index = f.trial_index AND s.call_id = f.call_id
 FORMAT PrettyCompact`.trim()
   }
 }
