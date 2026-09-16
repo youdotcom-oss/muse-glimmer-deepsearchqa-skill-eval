@@ -84,6 +84,30 @@ bun run check          # typecheck + tests
 
 ## Results
 
+### 50-task sample — 2026-09-15 (`@youdotcom-oss/pi@0.6.0`, `you-search` + `you-contents` only)
+
+Tool allowlist restricted to the package's two paid web tools (`tools: ['you-contents',
+'you-search']`), which also removes `read`/`bash`/`edit`/`write` and the keyless
+`you-search-free` tool. The `you-web` skill body is still injected directly into the
+system prompt. Compaction on; no tool cap. `meta/muse-glimmer-30b`, thinking `high`,
+50 tasks K=1, official grading. Commit `148a47c`.
+Artifacts: `data/ab/youdotcom-pi-2tool-high-*` (gitignored).
+
+| | |
+| --- | --- |
+| **Avg F1 (raw) — primary metric** | **0.4788** |
+| **Fully Correct pass rate** | **40.0%** (20/50) |
+| Total cost | $5.03 ($0.1007/trial) |
+| Avg end-to-end latency / trial | 386s |
+| Tool-call events / trial | 31.1 |
+| Tool mix (calls) | you-search 639 (0 failed), you-contents 138 (1 failed) |
+
+Paired: vs the all-tools + injected-skill run **−0.019** (9 gains / 9 losses / 32 ties —
+within the n=50 noise band); vs pure-port `cap15-high` **−0.207** (9 / 24 / 17); vs RLM
+v5 **−0.335** (6 / 24 / 20). Observation for this run: the allowlist eliminated the
+keyless rate-limit failures (0 failed searches vs 106) but the model simply searched
+more (639 vs 490 calls), so cost rose ~21% and the score did not move outside noise.
+
 ### 50-task sample — 2026-09-15 (`@youdotcom-oss/pi@0.6.0`, skill injected directly; corrected run)
 
 Corrects the run below: `read` is excluded — pi's read tool resolves arbitrary
