@@ -26,14 +26,12 @@ const YOU_PI_EXTENSION_PATH = new URL('../node_modules/@youdotcom-oss/pi/main.ts
 /** The package's web-research skill, passed directly into the system prompt. */
 const YOU_PI_WEB_SKILL_PATH = new URL('../node_modules/@youdotcom-oss/pi/skills/you-web/SKILL.md', import.meta.url)
   .pathname
-/** No `tools` allowlist: pi enables `read` plus every tool the package registers
- * (you-search, you-contents, you-research, you-finance, you-discover, searchDocs,
- * you-search-free, you-balance). `read` is EXCLUDED: it resolves arbitrary
- * absolute paths and would let the model read data/prompts.jsonl (expected
- * answers), .tmp/generate-tasks.jsonl, and prior graded artifacts. The skill is
- * delivered as system-prompt text instead. The coding tools are excluded so a
- * research trial cannot mutate the working tree. */
-const EXCLUDED_TOOLS = ['read', 'bash', 'edit', 'write']
+/** Allowlist: exactly the package's paid web tools. This keeps `read` out — it
+ * resolves arbitrary absolute paths and could open data/prompts.jsonl (expected
+ * answers) — and drops the keyless `you-search-free` tool the model over-used
+ * (106 rate-limit failures in the previous run). The `you-web` skill is delivered
+ * as system-prompt text, so no read tool is needed. */
+const TOOLS = ['you-contents', 'you-search']
 const SYSTEM_PROMPT =
   "You are an autonomous research agent. Answer the user's question using the available tools. " +
   'Ground factual claims in sources, include inline citations, and list sources at the end. Do not ask clarifying questions.'
@@ -55,7 +53,7 @@ async function runAdapter(input: AdapterInput): Promise<object> {
     model,
     provider,
     thinkingLevel,
-    excludeTools: EXCLUDED_TOOLS,
+    tools: TOOLS,
     systemPrompt: SYSTEM_PROMPT,
     skillPath: YOU_PI_WEB_SKILL_PATH,
     extensionPath: YOU_PI_EXTENSION_PATH,
