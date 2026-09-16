@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs'
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -17,8 +18,10 @@ interface CreatePiSessionOptions {
   /** Tools to disable after the allowlist/defaults are applied. */
   excludeTools?: string[]
   systemPrompt: string
-  /** Optional extra skill path; the @youdotcom-oss/pi package contributes its own
-   * skills through `resources_discover`, which bindExtensions runs below. */
+  /** Skill body passed DIRECTLY into the system prompt (frontmatter stripped).
+   * pi only advertises skills when `read`/`bash` is active, and the eval must
+   * keep `read` off (it can reach data/prompts.jsonl and the expected answers),
+   * so the skill is delivered as text instead of via the skill mechanism. */
   skillPath?: string
   extensionPath: string
   cwd?: string
@@ -31,6 +34,19 @@ interface PiSessionResult {
 const DEFAULT_PI_PROVIDER_TIMEOUT_MS = 180_000
 const DEFAULT_PI_PROVIDER_MAX_RETRIES = 2
 const DEFAULT_PI_PROVIDER_MAX_RETRY_DELAY_MS = 60_000
+
+/** Read a SKILL.md and append its body (YAML frontmatter stripped) to the
+ * system prompt. Deliberate alternative to pi's read-gated skill surfacing. */
+function systemPromptWithSkill(systemPrompt: string, skillPath: string): string {
+  try {
+    const body = readFileSync(skillPath, 'utf8')
+      .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
+      .trim()
+    return body.length > 0 ? `${systemPrompt}\n\n${body}` : systemPrompt
+  } catch {
+    return systemPrompt
+  }
+}
 
 export function createPiSettingsManager(): ReturnType<typeof SettingsManager.inMemory> {
   return SettingsManager.inMemory({
@@ -65,18 +81,21 @@ export async function createPiSession(options: CreatePiSessionOptions): Promise<
   if (!model) throw new Error(`Model ${options.provider}/${options.model} not found in pi registry`)
 
   const settingsManager = createPiSettingsManager()
+  const effectiveSystemPrompt = options.skillPath
+    ? systemPromptWithSkill(options.systemPrompt, options.skillPath)
+    : options.systemPrompt
   const loader = new DefaultResourceLoader({
     cwd: options.cwd ?? process.cwd(),
     agentDir: getAgentDir(),
     settingsManager,
-    additionalSkillPaths: options.skillPath ? [options.skillPath] : [],
+    additionalSkillPaths: [],
     additionalExtensionPaths: [options.extensionPath],
     noExtensions: false,
     noSkills: true,
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    systemPromptOverride: () => options.systemPrompt,
+    systemPromptOverride: () => effectiveSystemPrompt,
   })
   await loader.reload()
 

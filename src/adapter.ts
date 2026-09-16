@@ -23,12 +23,17 @@ const THINKING_LEVELS = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhi
 const HARNESS_MESSAGE_ROLES = new Set(['user', 'assistant', 'system', 'tool'])
 /** Upstream You.com package (extension + bundled skills), evaluated as a whole. */
 const YOU_PI_EXTENSION_PATH = new URL('../node_modules/@youdotcom-oss/pi/main.ts', import.meta.url).pathname
+/** The package's web-research skill, passed directly into the system prompt. */
+const YOU_PI_WEB_SKILL_PATH = new URL('../node_modules/@youdotcom-oss/pi/skills/you-web/SKILL.md', import.meta.url)
+  .pathname
 /** No `tools` allowlist: pi enables `read` plus every tool the package registers
  * (you-search, you-contents, you-research, you-finance, you-discover, searchDocs,
- * you-search-free, you-balance). The coding tools are excluded so a research trial
- * cannot mutate the working tree; `read` stays because pi only surfaces skills
- * (the package's bundled `you-web` etc.) when a file-reading tool is present. */
-const EXCLUDED_TOOLS = ['bash', 'edit', 'write']
+ * you-search-free, you-balance). `read` is EXCLUDED: it resolves arbitrary
+ * absolute paths and would let the model read data/prompts.jsonl (expected
+ * answers), .tmp/generate-tasks.jsonl, and prior graded artifacts. The skill is
+ * delivered as system-prompt text instead. The coding tools are excluded so a
+ * research trial cannot mutate the working tree. */
+const EXCLUDED_TOOLS = ['read', 'bash', 'edit', 'write']
 const SYSTEM_PROMPT =
   "You are an autonomous research agent. Answer the user's question using the available tools. " +
   'Ground factual claims in sources, include inline citations, and list sources at the end. Do not ask clarifying questions.'
@@ -52,6 +57,7 @@ async function runAdapter(input: AdapterInput): Promise<object> {
     thinkingLevel,
     excludeTools: EXCLUDED_TOOLS,
     systemPrompt: SYSTEM_PROMPT,
+    skillPath: YOU_PI_WEB_SKILL_PATH,
     extensionPath: YOU_PI_EXTENSION_PATH,
     cwd: input.cwd,
   })
