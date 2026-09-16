@@ -84,7 +84,41 @@ bun run check          # typecheck + tests
 
 ## Results
 
+### 50-task sample — 2026-09-15 (`@youdotcom-oss/pi@0.6.0`, skill injected directly; corrected run)
+
+Corrects the run below: `read` is excluded — pi's read tool resolves arbitrary
+absolute paths and could open `data/prompts.jsonl` (expected answers),
+`.tmp/generate-tasks.jsonl`, and prior graded artifacts. The package's `you-web`
+`SKILL.md` body is passed **directly into the system prompt** (frontmatter stripped)
+instead of through pi's read-gated skill surfacing, so no file-reading tool is needed.
+All of the package's other tools stay enabled (`you-search`, `you-contents`,
+`you-research`, `you-finance`, `you-discover`, `searchDocs`, `you-search-free`,
+`you-balance`); compaction on; no tool cap. `meta/muse-glimmer-30b`, thinking `high`,
+50 tasks K=1, official grading. Commit `cba74e2`.
+Artifacts: `data/ab/youdotcom-pi-skill-high-*` (gitignored).
+
+| | |
+| --- | --- |
+| **Avg F1 (raw) — primary metric** | **0.5000** |
+| **Fully Correct pass rate** | **46.0%** (23/50) |
+| Total cost | $4.16 ($0.0832/trial) |
+| Avg end-to-end latency / trial | 388s |
+| Tool-call events / trial | 32.3 |
+| Tool mix (calls) | you-search 490, you-contents 155, you-search-free 107 (106 failed), you-research 56 |
+| Trial statuses | 0 errors; 106 failed `you-search-free` calls (keyless rate limit) |
+
+Paired: vs pure-port `cap15-high` **−0.188** (12 gains / 23 losses / 15 ties); vs
+RLM v5 **−0.316** (8 / 23 / 19); vs the `read`-on run below **−0.042**
+(7 / 10 / 33, i.e. within the n=50 noise band). The injected skill did not
+meaningfully change the outcome: the model still over-used the keyless
+`you-search-free` tool (106 rate-limit failures) instead of the paid
+search+contents path the skill describes.
+
 ### 50-task sample — 2026-09-15 (`@youdotcom-oss/pi@0.6.0` evaluated as the harness extension)
+
+**Superseded by the corrected run above:** this run had `read` active, an eval-integrity
+channel to `data/prompts.jsonl`; no trial actually read a prompt file, but the config is
+unsafe. Kept as a recorded row.
 
 Basis: the upstream You.com package replaces the custom MCP bridge (commit `4d94c81`).
 It is evaluated **as a whole**: the extension registers `you-search`, `you-contents`,
